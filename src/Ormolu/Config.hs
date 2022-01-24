@@ -15,19 +15,23 @@ module Ormolu.Config
     RegionDeltas (..),
     SourceType (..),
     defaultConfig,
+    regionIndicesToDeltas,
+    DynOption (..),
+    dynOptionToLocatedStr,
+
+    -- * Fourmolu configuration
     PrinterOpts (..),
     PrinterOptsPartial,
     PrinterOptsTotal,
     defaultPrinterOpts,
-    loadConfigFile,
-    configFileName,
-    ConfigFileLoadResult (..),
     fillMissingPrinterOpts,
     CommaStyle (..),
     HaddockPrintStyle (..),
-    regionIndicesToDeltas,
-    DynOption (..),
-    dynOptionToLocatedStr,
+
+    -- ** Loading Fourmolu configuration
+    loadConfigFile,
+    configFileName,
+    ConfigFileLoadResult (..),
   )
 where
 
@@ -120,6 +124,33 @@ defaultConfig =
       cfgPrinterOpts = defaultPrinterOpts
     }
 
+-- | Convert 'RegionIndices' into 'RegionDeltas'.
+regionIndicesToDeltas ::
+  -- | Total number of lines in the input
+  Int ->
+  -- | Region indices
+  RegionIndices ->
+  -- | Region deltas
+  RegionDeltas
+regionIndicesToDeltas total RegionIndices {..} =
+  RegionDeltas
+    { regionPrefixLength = maybe 0 (subtract 1) regionStartLine,
+      regionSuffixLength = maybe 0 (total -) regionEndLine
+    }
+
+-- | A wrapper for dynamic options.
+newtype DynOption = DynOption
+  { unDynOption :: String
+  }
+  deriving (Eq, Ord, Show)
+
+-- | Convert 'DynOption' to @'GHC.Located' 'String'@.
+dynOptionToLocatedStr :: DynOption -> GHC.Located String
+dynOptionToLocatedStr (DynOption o) = GHC.L GHC.noSrcSpan o
+
+----------------------------------------------------------------------------
+-- Fourmolu configuration
+
 -- | Options controlling formatting output.
 data PrinterOpts f = PrinterOpts
   { -- | Number of spaces to use for indentation
@@ -141,12 +172,21 @@ data PrinterOpts f = PrinterOpts
   }
   deriving (Generic)
 
+data CommaStyle
+  = Leading
+  | Trailing
+  deriving (Eq, Ord, Show, Generic, Bounded, Enum)
+
+data HaddockPrintStyle
+  = HaddockSingleLine
+  | HaddockMultiLine
+  deriving (Eq, Ord, Show, Generic, Bounded, Enum)
+
 -- | A version of 'PrinterOpts' where any field can be empty.
 -- This corresponds to the information in a config file or in CLI options.
 type PrinterOptsPartial = PrinterOpts Maybe
 
 deriving instance Eq PrinterOptsPartial
-
 deriving instance Show PrinterOptsPartial
 
 instance Semigroup PrinterOptsPartial where
@@ -155,11 +195,17 @@ instance Semigroup PrinterOptsPartial where
 instance Monoid PrinterOptsPartial where
   mempty = PrinterOpts Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing
 
+instance FromJSON PrinterOptsPartial where
+  parseJSON =
+    genericParseJSON
+      defaultOptions
+        { fieldLabelModifier = camelTo2 '-' . dropWhile isLower
+        }
+
 -- | A version of 'PrinterOpts' without empty fields.
 type PrinterOptsTotal = PrinterOpts Identity
 
 deriving instance Eq PrinterOptsTotal
-
 deriving instance Show PrinterOptsTotal
 
 defaultPrinterOpts :: PrinterOptsTotal
@@ -198,22 +244,12 @@ fillMissingPrinterOpts p1 p2 =
     fillField :: (forall g. PrinterOpts g -> g a) -> f a
     fillField f = maybe (f p2) pure $ f p1
 
-data CommaStyle
-  = Leading
-  | Trailing
-  deriving (Eq, Ord, Show, Generic, Bounded, Enum)
-
 instance FromJSON CommaStyle where
   parseJSON =
     genericParseJSON
       defaultOptions
         { constructorTagModifier = camelTo2 '-'
         }
-
-data HaddockPrintStyle
-  = HaddockSingleLine
-  | HaddockMultiLine
-  deriving (Eq, Ord, Show, Generic, Bounded, Enum)
 
 instance FromJSON HaddockPrintStyle where
   parseJSON =
@@ -222,36 +258,8 @@ instance FromJSON HaddockPrintStyle where
         { constructorTagModifier = drop (length "haddock-") . camelTo2 '-'
         }
 
--- | Convert 'RegionIndices' into 'RegionDeltas'.
-regionIndicesToDeltas ::
-  -- | Total number of lines in the input
-  Int ->
-  -- | Region indices
-  RegionIndices ->
-  -- | Region deltas
-  RegionDeltas
-regionIndicesToDeltas total RegionIndices {..} =
-  RegionDeltas
-    { regionPrefixLength = maybe 0 (subtract 1) regionStartLine,
-      regionSuffixLength = maybe 0 (total -) regionEndLine
-    }
-
--- | A wrapper for dynamic options.
-newtype DynOption = DynOption
-  { unDynOption :: String
-  }
-  deriving (Eq, Ord, Show)
-
--- | Convert 'DynOption' to @'GHC.Located' 'String'@.
-dynOptionToLocatedStr :: DynOption -> GHC.Located String
-dynOptionToLocatedStr (DynOption o) = GHC.L GHC.noSrcSpan o
-
-instance FromJSON PrinterOptsPartial where
-  parseJSON =
-    genericParseJSON
-      defaultOptions
-        { fieldLabelModifier = camelTo2 '-' . dropWhile isLower
-        }
+----------------------------------------------------------------------------
+-- Loading Fourmolu configuration
 
 -- | Read options from a config file, if found.
 -- Looks recursively in parent folders, then in 'XdgConfig',
