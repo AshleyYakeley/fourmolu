@@ -72,6 +72,39 @@ main = do
                 else 102
   exitWith exitCode
 
+-- | Build the full config, by adding 'PrinterOpts' from a file, if found.
+mkConfig :: FilePath -> Opts -> IO (Config RegionIndices)
+mkConfig path Opts {..} = do
+  filePrinterOpts <-
+    loadConfigFile path >>= \case
+      ConfigLoaded f po -> do
+        hPutStrLn stderr $ "Loaded config from: " <> f
+        printDebug $ show po
+        return $ Just po
+      ConfigParseError f (_pos, err) -> do
+        -- we ignore '_pos' due to the note on 'Data.YAML.Aeson.decode1'
+        hPutStrLn stderr $
+          unlines
+            [ "Failed to load " <> f <> ":",
+              "  " <> err
+            ]
+        exitWith $ ExitFailure 400
+      ConfigNotFound searchDirs -> do
+        printDebug
+          . unlines
+          $ ("No " ++ show configFileName ++ " found in any of:") :
+          map ("  " ++) searchDirs
+        return Nothing
+  return $
+    optConfig
+      { cfgPrinterOpts =
+          fillMissingPrinterOpts
+            (optPrinterOpts <> fromMaybe mempty filePrinterOpts)
+            (cfgPrinterOpts optConfig)
+      }
+  where
+    printDebug = when (cfgDebug optConfig) . hPutStrLn stderr
+
 -- | Format a single input.
 formatOne ::
   -- | Whether to respect default-extensions from .cabal files
@@ -315,6 +348,16 @@ configParser =
         )
     <*> pure defaultPrinterOpts
 
+sourceTypeParser :: Parser (Maybe SourceType)
+sourceTypeParser =
+  (option parseSourceType . mconcat)
+    [ long "source-type",
+      short 't',
+      metavar "TYPE",
+      value Nothing,
+      help "Set the type of source; TYPE can be 'module', 'sig', or 'auto' (the default)"
+    ]
+
 printerOptsParser :: Parser PrinterOptsPartial
 printerOptsParser = do
   poIndentation <-
@@ -386,16 +429,6 @@ printerOptsParser = do
             <> showDefaultValue poNewlinesBetweenDecls
       ]
   pure PrinterOpts {..}
-
-sourceTypeParser :: Parser (Maybe SourceType)
-sourceTypeParser =
-  (option parseSourceType . mconcat)
-    [ long "source-type",
-      short 't',
-      metavar "TYPE",
-      value Nothing,
-      help "Set the type of source; TYPE can be 'module', 'sig', or 'auto' (the default)"
-    ]
 
 ----------------------------------------------------------------------------
 -- Helpers
@@ -469,39 +502,6 @@ showDefaultValue =
     . toCLIArgument'
     . runIdentity
     . ($ defaultPrinterOpts)
-
--- | Build the full config, by adding 'PrinterOpts' from a file, if found.
-mkConfig :: FilePath -> Opts -> IO (Config RegionIndices)
-mkConfig path Opts {..} = do
-  filePrinterOpts <-
-    loadConfigFile path >>= \case
-      ConfigLoaded f po -> do
-        hPutStrLn stderr $ "Loaded config from: " <> f
-        printDebug $ show po
-        return $ Just po
-      ConfigParseError f (_pos, err) -> do
-        -- we ignore '_pos' due to the note on 'Data.YAML.Aeson.decode1'
-        hPutStrLn stderr $
-          unlines
-            [ "Failed to load " <> f <> ":",
-              "  " <> err
-            ]
-        exitWith $ ExitFailure 400
-      ConfigNotFound searchDirs -> do
-        printDebug
-          . unlines
-          $ ("No " ++ show configFileName ++ " found in any of:") :
-          map ("  " ++) searchDirs
-        return Nothing
-  return $
-    optConfig
-      { cfgPrinterOpts =
-          fillMissingPrinterOpts
-            (optPrinterOpts <> fromMaybe mempty filePrinterOpts)
-            (cfgPrinterOpts optConfig)
-      }
-  where
-    printDebug = when (cfgDebug optConfig) . hPutStrLn stderr
 
 -- | Parse 'Mode'.
 parseMode :: ReadM Mode
