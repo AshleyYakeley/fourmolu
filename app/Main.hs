@@ -45,6 +45,7 @@ main = do
     [] -> mkConfig cwd opts
     ["-"] -> mkConfig cwd opts
     file : _ -> mkConfig file opts
+
   let formatOne' =
         formatOne
           optCabalDefaultExtensions
@@ -99,7 +100,7 @@ mkConfig path Opts {..} = do
     optConfig
       { cfgPrinterOpts =
           fillMissingPrinterOpts
-            (optPrinterOpts <> fromMaybe mempty filePrinterOpts)
+            (fromMaybe mempty filePrinterOpts)
             (cfgPrinterOpts optConfig)
       }
   where
@@ -204,8 +205,6 @@ data Opts = Opts
     optCabalDefaultExtensions :: CabalDefaultExtensionsOpts,
     -- | Source type option, where 'Nothing' means autodetection
     optSourceType :: !(Maybe SourceType),
-    -- | Fourmolu-specific options
-    optPrinterOpts :: !PrinterOptsPartial,
     -- | Haskell source files to format or stdin (when the list is empty)
     optInputFiles :: ![FilePath]
   }
@@ -281,7 +280,6 @@ optsParser =
     <*> configParser
     <*> cabalDefaultExtensionsParser
     <*> sourceTypeParser
-    <*> printerOptsParser
     <*> (many . strArgument . mconcat)
       [ metavar "FILE",
         help "Haskell source files to format or stdin (the default)"
@@ -346,7 +344,7 @@ configParser =
                 help "End line of the region to format (inclusive)"
               ]
         )
-    <*> pure defaultPrinterOpts
+    <*> printerOptsParser
 
 sourceTypeParser :: Parser (Maybe SourceType)
 sourceTypeParser =
@@ -358,75 +356,71 @@ sourceTypeParser =
       help "Set the type of source; TYPE can be 'module', 'sig', or 'auto' (the default)"
     ]
 
-printerOptsParser :: Parser PrinterOptsPartial
+printerOptsParser :: Parser PrinterOptsTotal
 printerOptsParser = do
   poIndentation <-
-    (optional . option auto . mconcat)
+    (option auto . mconcat)
       [ long "indentation",
         metavar "WIDTH",
-        help $
-          "Number of spaces per indentation step"
-            <> showDefaultValue poIndentation
+        help "Number of spaces per indentation step",
+        withPrinterOptsDefault poIndentation
       ]
   poCommaStyle <-
-    (optional . option parseBoundedEnum . mconcat)
+    (option parseBoundedEnum . mconcat)
       [ long "comma-style",
         metavar "STYLE",
         help $
           "How to place commas in multi-line lists, records etc: "
-            <> showAllValues @CommaStyle
-            <> showDefaultValue poCommaStyle
+            <> showAllValues @CommaStyle,
+        withPrinterOptsDefault poCommaStyle
       ]
   poIndentWheres <-
-    (optional . option parseBoundedEnum . mconcat)
+    (option parseBoundedEnum . mconcat)
       [ long "indent-wheres",
         metavar "BOOL",
         help $
           "Whether to indent 'where' bindings past the preceding body"
-            <> " (rather than half-indenting the 'where' keyword)"
-            <> showDefaultValue poIndentWheres
+            <> " (rather than half-indenting the 'where' keyword)",
+        withPrinterOptsDefault poIndentWheres
       ]
   poRecordBraceSpace <-
-    (optional . option parseBoundedEnum . mconcat)
+    (option parseBoundedEnum . mconcat)
       [ long "record-brace-space",
         metavar "BOOL",
-        help $
-          "Whether to leave a space before an opening record brace"
-            <> showDefaultValue poRecordBraceSpace
+        help "Whether to leave a space before an opening record brace",
+        withPrinterOptsDefault poRecordBraceSpace
       ]
   poDiffFriendlyImportExport <-
-    (optional . option parseBoundedEnum . mconcat)
+    (option parseBoundedEnum . mconcat)
       [ long "diff-friendly-import-export",
         metavar "BOOL",
         help $
           "Whether to make use of extra commas in import/export lists"
-            <> " (as opposed to Ormolu's style)"
-            <> showDefaultValue poDiffFriendlyImportExport
+            <> " (as opposed to Ormolu's style)",
+        withPrinterOptsDefault poDiffFriendlyImportExport
       ]
   poRespectful <-
-    (optional . option parseBoundedEnum . mconcat)
+    (option parseBoundedEnum . mconcat)
       [ long "respectful",
         metavar "BOOL",
-        help $
-          "Give the programmer more choice on where to insert blank lines"
-            <> showDefaultValue poRespectful
+        help "Give the programmer more choice on where to insert blank lines",
+        withPrinterOptsDefault poRespectful
       ]
   poHaddockStyle <-
-    (optional . option parseBoundedEnum . mconcat)
+    (option parseBoundedEnum . mconcat)
       [ long "haddock-style",
         metavar "STYLE",
         help $
           "How to print Haddock comments: "
-            <> showAllValues @HaddockPrintStyle
-            <> showDefaultValue poHaddockStyle
+            <> showAllValues @HaddockPrintStyle,
+        withPrinterOptsDefault poHaddockStyle
       ]
   poNewlinesBetweenDecls <-
-    (optional . option auto . mconcat)
+    (option auto . mconcat)
       [ long "newlines-between-decls",
         metavar "HEIGHT",
-        help $
-          "Number of spaces between top-level declarations"
-            <> showDefaultValue poNewlinesBetweenDecls
+        help "Number of spaces between top-level declarations",
+        withPrinterOptsDefault poNewlinesBetweenDecls
       ]
   pure PrinterOpts {..}
 
@@ -439,12 +433,12 @@ printerOptsParser = do
 parseBoundedEnum ::
   forall a.
   (Enum a, Bounded a, ToCLIArgument a) =>
-  ReadM a
+  ReadM (Identity a)
 parseBoundedEnum =
   eitherReader
     ( \s ->
         case lookup s argumentToValue of
-          Just v -> Right v
+          Just v -> Right $ pure v
           Nothing ->
             Left $
               "unknown value: '"
@@ -490,18 +484,15 @@ showAllValues = format (map toCLIArgument' [(minBound :: a) ..])
     format [x1, x2] = x1 <> " or " <> x2
     format (x : xs) = x <> ", " <> format xs
 
--- | CLI representation of the default value of an option, formatted for
--- inclusion in the help text.
-showDefaultValue ::
-  ToCLIArgument a =>
+withPrinterOptsDefault ::
+  (HasValue f, ToCLIArgument a) =>
   (PrinterOptsTotal -> Identity a) ->
-  String
-showDefaultValue =
-  (" (default " <>)
-    . (<> ")")
-    . toCLIArgument'
-    . runIdentity
-    . ($ defaultPrinterOpts)
+  Mod f (Identity a)
+withPrinterOptsDefault f =
+  mconcat
+    [ showDefaultWith (toCLIArgument . runIdentity),
+      value $ f defaultPrinterOpts
+    ]
 
 -- | Parse 'Mode'.
 parseMode :: ReadM Mode
