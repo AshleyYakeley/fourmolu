@@ -19,6 +19,7 @@ import Data.Maybe (fromMaybe, mapMaybe)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Data.Version (showVersion)
+import qualified Data.Yaml as Yaml
 import Development.GitRev
 import Options.Applicative
 import Ormolu
@@ -82,12 +83,11 @@ mkConfig path Opts {..} = do
         hPutStrLn stderr $ "Loaded config from: " <> f
         printDebug $ show po
         return $ Just po
-      ConfigParseError f (_pos, err) -> do
-        -- we ignore '_pos' due to the note on 'Data.YAML.Aeson.decode1'
+      ConfigParseError f e -> do
         hPutStrLn stderr $
           unlines
             [ "Failed to load " <> f <> ":",
-              "  " <> err
+              Yaml.prettyPrintParseException e
             ]
         exitWith $ ExitFailure 400
       ConfigNotFound searchDirs -> do
