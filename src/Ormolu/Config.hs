@@ -41,12 +41,13 @@ module Ormolu.Config
   )
 where
 
-import Control.Monad (forM, mzero)
+import Control.Monad (forM)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as Aeson
 import qualified Data.ByteString as BS
 import Data.Functor.Identity (Identity (..))
 import Data.String (fromString)
+import qualified Data.Text as Text
 import qualified Data.Yaml as Yaml
 import GHC.Generics (Generic)
 import qualified GHC.Types.SrcLoc as GHC
@@ -60,6 +61,7 @@ import System.Directory
     makeAbsolute,
   )
 import System.FilePath (splitPath, (</>))
+import Text.Read (readEither)
 
 -- | Type of sources that can be formatted by Ormolu.
 data SourceType
@@ -286,22 +288,60 @@ class PrinterOptsFieldType a where
   default parseJSON :: Aeson.FromJSON a => Aeson.Value -> Aeson.Parser a
   parseJSON = Aeson.parseJSON
 
-instance PrinterOptsFieldType Bool
+  parseText :: String -> Either String a
+  default parseText :: Read a => String -> Either String a
+  parseText = readEither
+
+  showText :: a -> String
+  default showText :: Show a => a -> String
+  showText = show
+
 instance PrinterOptsFieldType Int
 
+instance PrinterOptsFieldType Bool where
+  parseText = \case
+    "false" -> Right False
+    "true" -> Right True
+    unknown ->
+      Left . unlines $
+        [ "unknown value: " <> show unknown,
+          "Valid values are: \"false\" or \"true\""
+        ]
+
+commaStyleMap :: BijectiveMap CommaStyle
+commaStyleMap =
+  $( mkBijectiveMap
+      [ ('Leading, "leading"),
+        ('Trailing, "trailing")
+      ]
+   )
+
+haddockPrintStyleMap :: BijectiveMap HaddockPrintStyle
+haddockPrintStyleMap =
+  $( mkBijectiveMap
+      [ ('HaddockSingleLine, "single-line"),
+        ('HaddockMultiLine, "multi-line")
+      ]
+   )
+
 instance PrinterOptsFieldType CommaStyle where
-  parseJSON =
-    Aeson.withText "CommaStyle" $ \case
-      "leading" -> pure Leading
-      "trailing" -> pure Trailing
-      _ -> mzero
+  parseJSON = parseJSONWith commaStyleMap "CommaStyle"
+  parseText = parseTextWith commaStyleMap
+  showText = show . showTextWith commaStyleMap
 
 instance PrinterOptsFieldType HaddockPrintStyle where
-  parseJSON =
-    Aeson.withText "HaddockPrintStyle" $ \case
-      "single-line" -> pure HaddockSingleLine
-      "multi-line" -> pure HaddockMultiLine
-      _ -> mzero
+  parseJSON = parseJSONWith haddockPrintStyleMap "CommaStyle"
+  parseText = parseTextWith haddockPrintStyleMap
+  showText = show . showTextWith haddockPrintStyleMap
+
+----------------------------------------------------------------------------
+-- BijectiveMap helpers
+
+parseJSONWith :: BijectiveMap a -> String -> Aeson.Value -> Aeson.Parser a
+parseJSONWith mapping name =
+  Aeson.withText name (fromEither . parseTextWith mapping . Text.unpack)
+  where
+    fromEither = either Aeson.parseFail pure
 
 ----------------------------------------------------------------------------
 -- Loading Fourmolu configuration

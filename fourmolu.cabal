@@ -106,7 +106,7 @@ library
         directory ^>=1.3,
         yaml >=0.11.6.0 && <1
 
-    mixins:           ghc-lib-parser hiding (Language.Haskell.TH)
+    mixins:           ghc-lib-parser hiding (Language.Haskell.TH, Language.Haskell.TH.Syntax)
 
     if flag(dev)
         ghc-options:
