@@ -27,8 +27,8 @@ import Ormolu.Printer.Combinators
 import Ormolu.Printer.Meat.Common (p_rdrName)
 import Ormolu.Printer.Meat.Declaration.Value
   ( IsApplicand (..),
-    cmdTopPlacement,
-    exprPlacement,
+    getCmdTopPlacement,
+    getExprPlacement,
     p_hsCmdTop,
     p_hsExpr,
     p_hsExpr',
@@ -97,6 +97,7 @@ p_exprOpTree ::
 p_exprOpTree s (OpNode x) = located x (p_hsExpr' NotApplicand s)
 p_exprOpTree s t@(OpBranches exprs@(firstExpr :| otherExprs) ops) = do
   trailingSectionOperators <- getPrinterOpt poTrailingSectionOperators
+  exprPlacement <- getExprPlacement
 
   let placement =
         opBranchPlacement
@@ -199,6 +200,7 @@ p_cmdOpTree ::
   R ()
 p_cmdOpTree s (OpNode x) = located x (p_hsCmdTop s)
 p_cmdOpTree s t@(OpBranches (firstExpr :| otherExprs) ops) = do
+  cmdTopPlacement <- getCmdTopPlacement
   let placement =
         opBranchPlacement
           cmdTopPlacement

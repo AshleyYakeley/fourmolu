@@ -225,7 +225,7 @@ parsePrinterOptsCLI f =
       "OPTION"
     <*> f
       "let-style"
-      "Styling of let blocks (choices: \"auto\", \"inline\", \"newline\", or \"mixed\") (default: auto)"
+      "Styling of let blocks (choices: \"auto\", \"inline\", \"newline\", \"mixed\", or \"like-do\") (default: auto)"
       "OPTION"
     <*> f
       "in-style"
@@ -344,6 +344,7 @@ data LetStyle
   | LetInline
   | LetNewline
   | LetMixed
+  | LetLikeDo
   deriving (Eq, Show, Enum, Bounded)
 
 data InStyle
@@ -482,10 +483,11 @@ instance PrinterOptsFieldType LetStyle where
       "inline" -> Right LetInline
       "newline" -> Right LetNewline
       "mixed" -> Right LetMixed
+      "like-do" -> Right LetLikeDo
       _ ->
         Left . unlines $
           [ "unknown value: " <> show s
-          , "Valid values are: \"auto\", \"inline\", \"newline\", or \"mixed\""
+          , "Valid values are: \"auto\", \"inline\", \"newline\", \"mixed\", or \"like-do\""
           ]
 
 instance Aeson.FromJSON InStyle where
@@ -655,7 +657,7 @@ defaultPrinterOptsYaml =
     , "# How to print module docstring"
     , "haddock-style-module: null"
     , ""
-    , "# Styling of let blocks (choices: auto, inline, newline, or mixed)"
+    , "# Styling of let blocks (choices: auto, inline, newline, mixed, or like-do)"
     , "let-style: auto"
     , ""
     , "# How to align the 'in' keyword with respect to the 'let' keyword (choices: left-align, right-align, or no-space)"

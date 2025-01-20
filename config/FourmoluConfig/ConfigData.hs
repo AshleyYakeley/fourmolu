@@ -408,7 +408,8 @@ allFieldTypes =
           [ ("LetAuto", "auto"),
             ("LetInline", "inline"),
             ("LetNewline", "newline"),
-            ("LetMixed", "mixed")
+            ("LetMixed", "mixed"),
+            ("LetLikeDo", "like-do")
           ]
       },
     FieldTypeEnum

@@ -1,68 +1,65 @@
 {-- should be the same in every option --}
 
 let_oneline_empty =
-  let in 10
+  let
+
+    in 10
 
 let_oneline_single =
-  let a = 1 in a + 2
+  let
+    a = 1
+    in a + 2
 
 let_oneline_multi =
-  let a = 1; b = 2 in a + b
+  let
+    a = 1; b = 2
+    in a + b
 
 {-- pure let expressions --}
 
 let_empty =
   let
 
-  in
-    10
+    in 10
 
 let_single =
   let
     a = 1
-  in
-    a + 2
+    in a + 2
 
 let_single_sig =
   let
     a :: Int
     a = 1
-  in
-    a + 2
+    in a + 2
 
 let_single_comment =
   let
     -- a comment
     a = 1
-  in
-    a + 2
+    in a + 2
 
 let_multi =
   let
     a = 1
     b = 2
-  in
-    a + b
+    in a + b
 
 let_single_newline =
   let
     a = 1
-  in
-    a + 2
+    in a + 2
 
 let_multi_newline =
   let
     a = 1
     b = 2
-  in
-    a + b
+    in a + b
 
-let_hanging =
-  let
-    a = 1
-    b = 2
-  in
-    a + b
+let_hanging = let
+  a = 1
+  b = 2
+  in a + b
 
 {-- do-block --}
 
@@ -78,16 +75,16 @@ test_do = do
 
   let
     d = "hello"
-   in
-    print d
+    in print d
 
   let
     d = "hello"
     e = "world"
-   in
-    print (d ++ e)
+    in print (d ++ e)
 
-  let f = 1 in print f
+  let
+    f = 1
+    in print f
 
 {-- list comprehension --}
 

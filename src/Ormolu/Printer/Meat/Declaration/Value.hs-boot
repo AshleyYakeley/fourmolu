@@ -6,8 +6,8 @@ module Ormolu.Printer.Meat.Declaration.Value
     p_stringLit,
     p_hsExpr',
     p_hsCmdTop,
-    exprPlacement,
-    cmdTopPlacement,
+    getExprPlacement,
+    getCmdTopPlacement,
   )
 where
 
@@ -25,5 +25,5 @@ data IsApplicand
 
 p_hsExpr' :: IsApplicand -> BracketStyle -> HsExpr GhcPs -> R ()
 p_hsCmdTop :: BracketStyle -> HsCmdTop GhcPs -> R ()
-exprPlacement :: HsExpr GhcPs -> Placement
-cmdTopPlacement :: HsCmdTop GhcPs -> Placement
+getExprPlacement :: R (HsExpr GhcPs -> Placement)
+getCmdTopPlacement :: R (HsCmdTop GhcPs -> Placement)

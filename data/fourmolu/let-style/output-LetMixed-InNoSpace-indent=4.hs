@@ -49,6 +49,13 @@ let_multi_newline =
     in
         a + b
 
+let_hanging =
+    let
+        a = 1
+        b = 2
+    in
+        a + b
+
 {-- do-block --}
 
 test_do = do
