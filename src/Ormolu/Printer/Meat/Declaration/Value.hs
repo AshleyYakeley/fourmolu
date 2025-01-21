@@ -1228,16 +1228,28 @@ p_let' inDo letLoc localBinds mBody = do
   case letStyle of
     LetLikeDo -> do
       txt "let"
-      newline
-      inci $ do
-        p_hsLocalBinds localBinds
-        case mBody of
-          Just body -> do
-            newline
-            txt "in"
-            space
-            body
-          Nothing -> pure ()
+      if isAllInline
+        then do
+          space
+          p_hsLocalBinds localBinds
+          case mBody of
+            Just body -> do
+              space
+              txt "in"
+              space
+              body
+            Nothing -> pure ()
+        else do
+          newline
+          inci $ do
+            p_hsLocalBinds localBinds
+            case mBody of
+              Just body -> do
+                newline
+                txt "in"
+                space
+                body
+              Nothing -> pure ()
     _ ->
       sitcc $ do
         block "let" (p_hsLocalBinds localBinds)

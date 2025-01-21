@@ -1,19 +1,13 @@
 {-- should be the same in every option --}
 
 let_oneline_empty =
-  let
-
-    in 10
+  let in 10
 
 let_oneline_single =
-  let
-    a = 1
-    in a + 2
+  let a = 1 in a + 2
 
 let_oneline_multi =
-  let
-    a = 1; b = 2
-    in a + b
+  let a = 1; b = 2 in a + b
 
 {-- pure let expressions --}
 
@@ -82,9 +76,7 @@ test_do = do
     e = "world"
     in print (d ++ e)
 
-  let
-    f = 1
-    in print f
+  let f = 1 in print f
 
 {-- list comprehension --}
 
