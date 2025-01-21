@@ -60,8 +60,7 @@ let_hanging = let
 test_do = do
   let
 
-  let
-    a = 1
+  let a = 1
 
   let
     ax = 1
@@ -70,8 +69,7 @@ test_do = do
     b = 2
     c = 3
 
-  let
-    b1 = 2; c1 = 3
+  let b1 = 2; c1 = 3
 
   let
     bx = 2; cx = 3
@@ -93,9 +91,7 @@ test_list =
   [ x + a + b + c
   | x <- xs
   , let
-
-  , let
-      a = 1
+  , let a = 1
   , let
       b = 2
       c = 2
@@ -106,20 +102,21 @@ test_list_do = do
     [ x + a + b + c
     | x <- xs
     , let
-
+    , let a = 1
     , let
-        a = 1
+        ax = 1
     , let
         b = 2
         c = 3
+    , let b1 = 2; c1 = 3
+    , let
+        bx = 2; cx = 3
     ]
 
   [ x + y + a + b + c
     | y <- ys
     , let
-
-    , let
-        a = 1
+    , let a = 1
     , let
         b = 2
         c = 3

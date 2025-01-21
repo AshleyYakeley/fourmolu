@@ -100,8 +100,13 @@ test_list_do = do
     | x <- xs
     , let
     , let a = 1
+    , let
+        ax = 1
     , let b = 2
           c = 3
+    , let b1 = 2; c1 = 3
+    , let
+        bx = 2; cx = 3
     ]
 
   [ x + y + a + b + c
