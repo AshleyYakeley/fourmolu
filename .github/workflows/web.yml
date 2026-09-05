@@ -6,7 +6,10 @@ on:
       - main
 
 env:
-  GHC_VERSION: '9.10'
+  GHC_VERSION: '9.12'
+  # TODO: revert back to master
+  # https://github.com/digital-asset/ghc-lib/issues/614
+  GHC_WASM_META_TAG: 8e5d32a6bad7968e267dad4f0786c83cb327a7d9
 
 jobs:
   build_wasm:
@@ -16,19 +19,19 @@ jobs:
         working-directory: web/fourmolu-wasm/
     steps:
       -
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       -
         name: Install preprocessors
         run: |
           cd ~
           cabal update
-          cabal install --overwrite-policy=always alex happy
+          cabal install --overwrite-policy=always alex-3.5.4.0 happy-2.1.7
           echo ~/.cabal/bin >> "${GITHUB_PATH}"
       -
         name: Install wasm32-wasi-ghc
         run: |
           cd "$(mktemp -d)"
-          curl -L https://gitlab.haskell.org/ghc/ghc-wasm-meta/-/archive/master/ghc-wasm-meta-master.tar.gz \
+          curl -L https://gitlab.haskell.org/haskell-wasm/ghc-wasm-meta/-/archive/${GHC_WASM_META_TAG}/ghc-wasm-meta-${GHC_WASM_META_TAG}.tar.gz \
             | tar xz --strip-components=1
           FLAVOUR=${GHC_VERSION} ./setup.sh
           ~/.ghc-wasm/add_to_github_path.sh
@@ -40,7 +43,7 @@ jobs:
         name: Invalidate the cache every month
         run: echo "CURR_MONTH=$(date +%B)" | tee -a "${GITHUB_ENV}"
       -
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           # https://gitlab.haskell.org/ghc/ghc-wasm-meta/-/blob/56d8e171e3dc6acb63c2d10fbbd6f226d8126683/setup.sh#L147
           path: ~/.ghc-wasm/.cabal/store
@@ -52,7 +55,7 @@ jobs:
         # remove no-x-partial after ormolu updated for GHC 9.8
         run: ./build.sh --ghc-options='-Werror -Wno-x-partial'
       -
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fourmolu-wasm
           path: web/fourmolu-wasm/dist/fourmolu-wasm.wasm
@@ -61,12 +64,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       -
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       -
         name: Build web worker
         run: web/worker/build.sh --mode=production
       -
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fourmolu-web-worker
           path: web/worker/dist/worker.js
@@ -79,9 +82,9 @@ jobs:
         working-directory: web/site/
     steps:
       -
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       -
-        uses: haskell-actions/setup@v2
+        uses: haskell-actions/setup@v2.11.0
         with:
           ghc-version: ${{ env.GHC_VERSION }}
       -
@@ -92,12 +95,15 @@ jobs:
         name: Invalidate the cache every month
         run: echo "CURR_MONTH=$(date +%B)" | tee -a "${GITHUB_ENV}"
       -
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cabal
           key: ${{ runner.os }}-hakyll-cache-${{ env.CURR_MONTH }}-${{ hashFiles('web/site/cabal.project.freeze') }}
           restore-keys: |
                ${{ runner.os }}-hakyll-cache-${{ env.CURR_MONTH }}-
+      -
+        # refresh Hackage index-state after restoring cache
+        run: cabal update
       -
         name: Build site
         run: cabal run fourmolu-web --ghc-options='-Werror' -- build
@@ -107,17 +113,17 @@ jobs:
         name: Copy files to staging area
         run: mv _site ~/out
       -
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: fourmolu-wasm
           path: ~/out/static/
       -
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: fourmolu-web-worker
           path: ~/out/static/
       -
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fourmolu-web
           path: ~/out
@@ -128,7 +134,7 @@ jobs:
     if: github.ref_name == 'main'
     steps:
       -
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       -
         name: Set deploy key
         run: |
@@ -144,7 +150,7 @@ jobs:
           cd ~/deploy
           git ls-files | xargs rm -rf
       -
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: fourmolu-web
           path: ~/deploy

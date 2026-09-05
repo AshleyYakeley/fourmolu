@@ -24,6 +24,7 @@ module Ormolu.Printer.Combinators
     newline,
     declNewline,
     multilineCommentNewline,
+    newlineLiteral,
     inci,
     inciBy,
     inciIf,
@@ -37,6 +38,7 @@ module Ormolu.Printer.Combinators
     switchLayout,
     switchLayoutNoLimit,
     spansLayout,
+    enterLayout,
     Layout (..),
     vlayout,
     getLayout,
@@ -48,6 +50,7 @@ module Ormolu.Printer.Combinators
     -- ** Formatting lists
     sep,
     sepSemi,
+    sepSemi',
     canUseBraces,
     useBraces,
     dontUseBraces,
@@ -58,6 +61,7 @@ module Ormolu.Printer.Combinators
     backticks,
     banana,
     braces,
+    recordBraces,
     brackets,
     parens,
     parensHash,
@@ -256,7 +260,25 @@ sepSemi ::
   -- | Elements to render
   [a] ->
   R ()
-sepSemi f xs = vlayout singleLine multiLine
+sepSemi = sepSemi' False
+
+-- | A version of 'sepSemi' that allows to control whether semicolons should
+-- be inserted in multi-line layout.
+--
+-- > useBraces $ sepSemi' False txt ["foo", "bar"]
+-- >   == vlayout (txt "{ foo; bar }") (txt "foo\nbar")
+--
+-- > dontUseBraces $ sepSemi' True txt ["foo", "bar"]
+-- >   == vlayout (txt "foo; bar") (txt "foo;\nbar")
+sepSemi' ::
+  -- | Whether to insert semicolons in multi-line layout
+  Bool ->
+  -- | How to render an element
+  (a -> R ()) ->
+  -- | Elements to render
+  [a] ->
+  R ()
+sepSemi' addMultiColSemi f xs = vlayout singleLine multiLine
   where
     singleLine = do
       ub <- canUseBraces
@@ -272,7 +294,10 @@ sepSemi f xs = vlayout singleLine multiLine
               txt "}"
             else sep (txt ";" >> space) f xs'
     multiLine =
-      sep newline (dontUseBraces . f) xs
+      sep
+        (if addMultiColSemi then txt ";" >> newline else newline)
+        (dontUseBraces . f)
+        xs
 
 ----------------------------------------------------------------------------
 -- Wrapping
@@ -368,6 +393,31 @@ brackets_ needBreaks open close style m = sitcc (vlayout singleLine multiLine)
             else space >> sitcc m
       newline
       inciIf (style == S) close
+
+-- With leading commas align the close brace with commas
+-- otherwise move the close brace back to the left
+recordBraces :: R () -> R ()
+recordBraces m = do
+  commaStyle <- getPrinterOpt poCommaStyle
+  recordBraces_ (commaStyle == Trailing) m
+
+recordBraces_ :: Bool -> R () -> R ()
+recordBraces_ moveBraceBack m = do
+  style <- getPrinterOpt poRecordStyle
+  case style of
+    RecordStyleAligned -> braces N m
+    RecordStyleKnr ->
+      vlayout
+        (txt "{" >> m >> txt "}")
+        ( do
+            txt "{"
+            newline
+            sitcc m
+            newline
+            if moveBraceBack
+              then inciByFrac (-1) (txt "}")
+              else txt "}"
+        )
 
 ----------------------------------------------------------------------------
 -- Literals

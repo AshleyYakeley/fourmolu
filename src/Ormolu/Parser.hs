@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -18,6 +19,8 @@ import Control.Monad
 import Control.Monad.Except (ExceptT (..), runExceptT)
 import Control.Monad.IO.Class
 import Data.Char (isSpace)
+import Data.Choice (Choice)
+import Data.Choice qualified as Choice
 import Data.Functor
 import Data.Functor.Identity (Identity (..))
 import Data.Generics hiding (orElse)
@@ -30,7 +33,7 @@ import GHC.Data.EnumSet qualified as EnumSet
 import GHC.Data.FastString qualified as GHC
 import GHC.Data.Maybe (orElse)
 import GHC.Data.StringBuffer (StringBuffer)
-import GHC.Driver.Config.Parser (initParserOpts)
+import GHC.Driver.Config.Parser (initParserOpts, supportedLanguagePragmas)
 import GHC.Driver.Errors.Types qualified as GHC
 import GHC.Driver.Session as GHC
 import GHC.DynFlags (baseDynFlags)
@@ -45,6 +48,7 @@ import GHC.Types.SourceError qualified as GHC
 import GHC.Types.SrcLoc
 import GHC.Utils.Error
 import GHC.Utils.Exception (ExceptionMonad)
+import GHC.Utils.Logger (initLogger)
 import GHC.Utils.Panic qualified as GHC
 import Ormolu.Config
 import Ormolu.Config.Gen (SingleConstraintParens (..))
@@ -91,8 +95,12 @@ parseModule config@Config {..} packageFixityMap path rawInput = liftIO $ do
     parsePragmasIntoDynFlags baseFlags extraOpts path rawInputStringBuffer >>= \case
       Right res -> pure res
       Left err -> throwIO (OrmoluParsingFailed beginningLoc err)
-  let cppEnabled = EnumSet.member Cpp (GHC.extensionFlags dynFlags)
-      implicitPrelude = EnumSet.member ImplicitPrelude (GHC.extensionFlags dynFlags)
+  let cppEnabled =
+        Choice.fromBool $
+          EnumSet.member Cpp (GHC.extensionFlags dynFlags)
+      implicitPrelude =
+        Choice.fromBool $
+          EnumSet.member ImplicitPrelude (GHC.extensionFlags dynFlags)
   fixityImports <-
     parseImports dynFlags implicitPrelude path rawInputStringBuffer >>= \case
       Right res ->
@@ -175,10 +183,17 @@ parseModuleSnippet config@Config {..} modFixityMap dynFlags path rawInput = lift
 
 -- | Normalize a 'HsModule' by sorting its export lists, dropping
 -- blank comments, etc.
-normalizeModule :: Config RegionDeltas -> HsModule GhcPs -> HsModule GhcPs
+normalizeModule ::
+  Config RegionDeltas ->
+  HsModule GhcPs ->
+  HsModule GhcPs
 normalizeModule Config {..} hsmod =
   everywhere
-    (mkT dropBlankTypeHaddocks `extT` dropBlankDataDeclHaddocks `extT` patchContext)
+    ( mkT dropBlankTypeHaddocks
+        `extT` dropBlankDataDeclHaddocks
+        `extT` patchContext
+        `extT` patchExprContext
+    )
     hsmod
       { hsmodImports =
           hsmodImports hsmod,
@@ -212,6 +227,8 @@ normalizeModule Config {..} hsmod =
         | isBlankDocString s -> ConDeclH98 {con_doc = Nothing, ..}
       a -> a
 
+    -- For constraint contexts (both in types and in expressions), normalize
+    -- parenthesis as decided in https://github.com/tweag/ormolu/issues/264.
     patchContext :: LHsContext GhcPs -> LHsContext GhcPs
     patchContext = fmap $ \case
       [x@(L _ (HsParTy _ inner))]
@@ -224,6 +241,11 @@ normalizeModule Config {..} hsmod =
         | ConstraintAlways <- constraintParens -> [L lx (HsParTy noAnn x)]
         | otherwise -> [x]
       xs -> xs
+    patchExprContext :: LHsExpr GhcPs -> LHsExpr GhcPs
+    patchExprContext = fmap $ \case
+      x@(HsQual _ (L _ [L _ HsPar {}]) _) -> x
+      HsQual l0 (L l1 [x@(L lx _)]) e -> HsQual l0 (L l1 [L lx (HsPar noAnn x)]) e
+      x -> x
     constraintParens = runIdentity (poSingleConstraintParens cfgPrinterOpts)
 
 -- | Enable all language extensions that we think should be enabled by
@@ -264,7 +286,8 @@ manualExts =
     OverloadedRecordDot, -- f.g parses differently
     OverloadedRecordUpdate, -- qualified fields are not supported
     OverloadedLabels, -- a#b is parsed differently
-    ExtendedLiterals -- 1#Word32 is parsed differently
+    ExtendedLiterals, -- 1#Word32 is parsed differently
+    MultilineStrings -- """""" is parsed differently
   ]
 
 -- | Run a 'GHC.P' computation.
@@ -305,10 +328,14 @@ parsePragmasIntoDynFlags flags extraOpts filepath input =
     let (_warnings, fileOpts) =
           GHC.getOptions
             (initParserOpts flags)
+            (supportedLanguagePragmas flags)
             input
             filepath
+    -- 'initLogger' does not have any hooks installed, so we don't get any
+    -- (unwanted) output.
+    logger <- initLogger
     (flags', leftovers, warnings) <-
-      parseDynamicFilePragma flags (extraOpts <> fileOpts)
+      parseDynamicFilePragma logger flags (extraOpts <> fileOpts)
     case NE.nonEmpty leftovers of
       Nothing -> return ()
       Just unrecognizedOpts ->
@@ -320,8 +347,8 @@ parsePragmasIntoDynFlags flags extraOpts filepath input =
 parseImports ::
   -- | Pre-set 'DynFlags'
   DynFlags ->
-  -- | Implicit Prelude?
-  Bool ->
+  -- | Whether the implicit Prelude is in effect
+  Choice "implicitPrelude" ->
   -- | File name (only for source location annotations)
   FilePath ->
   -- | Input for the parser
@@ -343,7 +370,11 @@ parseImports flags implicitPrelude filepath input =
                     mod' = mmoduleName `orElse` L (GHC.noAnnSrcSpan main_loc) mAIN_NAME
                     explicitImports = hsmodImports hsmod
                     implicitImports =
-                      GHC.mkPrelImports (unLoc mod') main_loc implicitPrelude explicitImports
+                      GHC.mkPrelImports
+                        (unLoc mod')
+                        main_loc
+                        (Choice.toBool implicitPrelude)
+                        explicitImports
                  in Right (explicitImports ++ implicitImports)
   where
     popts = initParserOpts flags

@@ -3,6 +3,7 @@
 
 module Ormolu.Imports.Grouping
   ( Import (..),
+    ImportList (..),
     prepareExistingGroups,
     groupImports,
   )
@@ -19,17 +20,23 @@ import Data.Set qualified as Set
 import Distribution.ModuleName qualified as Cabal
 import GHC.Hs (GhcPs, getLocA)
 import Language.Haskell.Syntax (LImportDecl, ModuleName, moduleNameString)
-import Ormolu.Config (ImportGroup (..), ImportGroupRule (..), ImportGrouping (..), ImportModuleMatcher (..))
+import Ormolu.Config (ImportGroup (..), ImportGroupRule (..), ImportGrouping (..))
 import Ormolu.Config qualified as Config
 import Ormolu.Utils (ghcModuleNameToCabal, groupBy', separatedByBlank)
-import Ormolu.Utils.Glob (matchesGlob)
+import Ormolu.Utils.Glob (matchAllGlob, matchesGlob)
 
 newtype ImportGroups = ImportGroups (NonEmpty ImportGroup)
 
 data Import = Import
   { importName :: ModuleName,
+    importList :: Maybe ImportList,
     importQualified :: Bool
   }
+
+data ImportList
+  = ImportList
+  | HidingList
+  deriving (Eq)
 
 importGroupSingleStrategy :: ImportGroups
 importGroupSingleStrategy =
@@ -94,16 +101,20 @@ groupsFromConfig =
 matchAllImportRule :: ImportGroupRule
 matchAllImportRule =
   ImportGroupRule
-    { igrModuleMatcher = MatchAllModules,
+    { igrGlob = matchAllGlob,
+      igrImportListMatcher = Config.MatchAnyImportDeclaration,
       igrQualifiedMatcher = Config.MatchBothQualifiedAndUnqualified,
+      igrScopeMatcher = Config.MatchAllModules,
       igrPriority = Config.matchAllRulePriority
     }
 
 matchLocalModulesRule :: ImportGroupRule
 matchLocalModulesRule =
   ImportGroupRule
-    { igrModuleMatcher = MatchLocalModules,
+    { igrGlob = matchAllGlob,
+      igrImportListMatcher = Config.MatchAnyImportDeclaration,
       igrQualifiedMatcher = Config.MatchBothQualifiedAndUnqualified,
+      igrScopeMatcher = Config.MatchLocalModules,
       igrPriority = Config.matchLocalRulePriority
     }
 
@@ -122,16 +133,30 @@ withUnqualifiedOnly ImportGroupRule {..} =
     }
 
 matchesRule :: Set Cabal.ModuleName -> Import -> ImportGroupRule -> Bool
-matchesRule localMods Import {..} ImportGroupRule {..} = matchesModules && matchesQualified
+matchesRule localMods Import {..} ImportGroupRule {..} =
+  and
+    [ matchingGlob,
+      matchingImportList,
+      matchingQualified,
+      matchingScope
+    ]
   where
-    matchesModules = case igrModuleMatcher of
-      MatchAllModules -> True
-      MatchLocalModules -> ghcModuleNameToCabal importName `Set.member` localMods
-      MatchGlob gl -> moduleNameString importName `matchesGlob` gl
-    matchesQualified = case igrQualifiedMatcher of
+    matchingGlob = moduleNameString importName `matchesGlob` igrGlob
+    matchingImportList = case igrImportListMatcher of
+      Config.MatchExplicitImportList -> importList == Just ImportList
+      Config.MatchHidingImportClause -> importList == Just HidingList
+      Config.MatchWholeModuleImport -> importList == Nothing
+      Config.MatchAnyImportDeclaration -> True
+    matchingQualified = case igrQualifiedMatcher of
       Config.MatchQualifiedOnly -> importQualified
       Config.MatchUnqualifiedOnly -> not importQualified
       Config.MatchBothQualifiedAndUnqualified -> True
+    matchingScope =
+      let isLocalModule = ghcModuleNameToCabal importName `Set.member` localMods
+       in case igrScopeMatcher of
+            Config.MatchAllModules -> True
+            Config.MatchExternalModules -> not isLocalModule
+            Config.MatchLocalModules -> isLocalModule
 
 prepareExistingGroups :: ImportGrouping -> Bool -> [LImportDecl GhcPs] -> [[LImportDecl GhcPs]]
 prepareExistingGroups ig respectful =

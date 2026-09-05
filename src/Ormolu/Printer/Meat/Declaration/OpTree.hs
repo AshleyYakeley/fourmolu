@@ -130,21 +130,34 @@ p_exprOpTree s t@(OpBranches exprs@(firstExpr :| otherExprs) ops) = do
           -- place the operator in a trailing position (because it would be
           -- read as being part of the do-block)
           && not (isDoBlock $ rightMostNode prevExpr)
+      -- A staircase of two or more trailing operators is only worthwhile when
+      -- the operand at the very end of the chain has a hanging form (a do
+      -- block, lambda, case, etc.): the trailing operator then introduces that
+      -- block. When such a chain ends in an ordinary expression (a variable,
+      -- literal, or plain application) the trailing layout only produces
+      -- ever-deepening indentation, so we fall back to the leading-operator
+      -- layout. A single hard splitter is exempt: it does not form a pyramid
+      -- and trailing is the idiomatic way to introduce its operand.
+      chainEndsInHangingForm =
+        case rightMostNode t of
+          OpNode (L _ n) -> exprPlacement n == Hanging
+          _ -> False
+      isSingleOperator = case ops of
+        [_] -> True
+        _ -> False
       -- If all operators at the current level match the conditions to be
-      -- trailing, then put them in a trailing position
-      isTrailing = all couldBeTrailing $ zip (NE.toList exprs) ops
+      -- trailing, and the chain is either a single operator or ends in a
+      -- hanging form, then put the operators in a trailing position.
+      isTrailing =
+        (isSingleOperator || chainEndsInHangingForm)
+          && all couldBeTrailing (zip (NE.toList exprs) ops)
   ub <- if isTrailing then return useBraces else opBranchBraceStyle placement
   indent <- getPrinterOpt poIndentation
   let p_x = ub $ p_exprOpTree s firstExpr
       putOpsExprs prevExpr (opi : ops') (expr : exprs') = do
         let isLast = null exprs'
             ub' = if not isLast then ub else id
-            -- Distinguish holes used in infix notation.
-            -- eg. '1 _foo 2' and '1 `_foo` 2'
-            opWrapper = case unLoc (opiOp opi) of
-              HsUnboundVar _ _ -> backticks
-              _ -> id
-            p_op = located (opiOp opi) (opWrapper . p_hsExpr)
+            p_op = located (opiOp opi) p_hsExpr
             p_y = ub' $ p_exprOpTree N expr
         if isTrailing
           then do
@@ -186,7 +199,7 @@ p_exprOpTree s t@(OpBranches exprs@(firstExpr :| otherExprs) ops) = do
 -- intermediate representation.
 cmdOpTree :: LHsCmdTop GhcPs -> OpTree (LHsCmdTop GhcPs) (LHsExpr GhcPs)
 cmdOpTree = \case
-  (L _ (HsCmdTop _ (L _ (HsCmdArrForm _ op Infix _ [x, y])))) ->
+  (L _ (HsCmdTop _ (L _ (HsCmdArrForm _ op Infix [x, y])))) ->
     BinaryOpBranches (cmdOpTree x) op (cmdOpTree y)
   n -> OpNode n
 

@@ -36,9 +36,9 @@ This is automatically run on Fourmolu's source code in the pre-commit hooks (see
 
 ### Pre-commit hooks
 
-We highly recommend turning on pre-commit hooks to run checks every time you commit. To do so, install [`pre-commit`](https://pre-commit.com/) and run `pre-commit install` in this directory.
+We highly recommend turning on pre-commit hooks to run checks every time you commit. To do so, install [`hooky`](https://github.com/brandonchinn178/hooky) and run `hooky install` in this directory.
 
-This is optional, but is run in CI regardless.
+This is optional, and is validated in CI regardless.
 
 ### Adding a new configuration option
 
@@ -103,7 +103,7 @@ To release a new version, do the following workflow:
     1. Curate `CHANGELOG.md` (see `changelog.d/README.md`)
 
     1. Curate option order
-        * Re-order the options in `config/ConfigData.hs`
+        * Re-order the options in `config/FourmoluConfig/ConfigData.hs`
             * Sort by popularity/importance (using your best judgement, without too much churn every release)
             * Regenerate with `config/generate.sh`
         * Ensure the `PrinterOptsSpec.hs` tests are also in the same order as the options
@@ -128,6 +128,10 @@ To release a new version, do the following workflow:
 
 1. If this is a new major version, update HLS to use it ([example](https://github.com/haskell/haskell-language-server/commit/052aa9073fc051f4ac24ec158cf940cbec1682cb)). It's rare that we'll be changing our API in a way that requires actual code changes.
 
+1. Add new version to GHCup:
+  * https://github.com/haskell/ghcup-metadata/blob/develop/ghcup-3rdparty-0.1.0.yaml
+  * Bump latest/recommended tags
+
 1. Publicize on Reddit (https://reddit.com/r/haskell) and Discourse (https://discourse.haskell.org)
 
 ## Merging upstream
@@ -135,48 +139,53 @@ To release a new version, do the following workflow:
 Fourmolu aims to continue merging upstream changes in Ormolu. Whenever Ormolu makes a new release (ideally within a week), the following steps should be run to merge the changes into Fourmolu.
 
 1. `cd` into your local copy of the Fourmolu repository
-1. Add Ormolu as an upstream remote: `git remote add ormolu git@github.com:tweag/ormolu`
+1. Add Ormolu as an upstream remote: `git remote add ormolu git@github.com:mrkkrp/ormolu`
 1. Check out a new branch: `git switch -c merge-ormolu main`
 1. Pull Ormolu's git history: `git fetch ormolu --no-tags`
 1. Find the commit corresponding to the new Ormolu version and merge it: `git merge <commit> -m 'Merge ormolu-X.Y.Z'`
 1. (Recommended) Switch to diff3 conflicts: `git checkout --conflict=diff3`. This provides more context that might be helpful for resolving conflicts. See [docs](https://git-scm.com/book/en/v2/Git-Tools-Advanced-Merging#_checking_out_conflicts).
 1. Resolve conflicts + finish merge: `git merge --continue`
 1. Follow "Update tests" section to update tests
-1. Lint files with `pre-commit run -a`
+1. Lint files with `hooky fix -a`
 1. Make a PR and merge as usual
     1. **MAKE SURE TO CREATE A MERGE COMMIT**. Don't use the "Squash and merge" or "Rebase and merge" options.
 
 ### Resolving conflicts
 
-* Conflicts at the following paths should be resolved by keeping the files DELETED (i.e. if there's a "deleted by us" conflict, use `git rm` to avoid adding the file to our repo):
-    * `**/.envrc`
-    * `**/.ormolu`
-    * `.github/workflows/binaries.yml`
-    * `CONTRIBUTING.md`
-    * `DESIGN.md`
-    * `flake.lock`
-    * `flake.nix`
-    * `nix/`
-    * `ormolu-live/`
-    * `weeder.toml`
+Follow these steps in order to resolve upstream conflicts:
 
-* Conflicts at the following paths should be resolved by throwing out Ormolu's changes and keeping our changes (i.e. if there's a conflict, use `git checkout --ours`):
-    * `.github/workflows/ci.yml`
-
-* The state of the following paths should be the same as they are in Ormolu (i.e. if there's a conflict, use `git checkout --theirs`)
-    * `expected-failures/`
-
-* If any of the `default.nix` files are changed, manually verify that all end-to-end tests are accounted for. After doing so, `git rm` each of them.
+1. If any of the `default.nix` files are changed, manually verify that all end-to-end tests are accounted for. After doing so, `git rm` each of them.
     * For example, `./region-tests/` is one directory of tests, which is captured in the `Ormolu.Integration.RegionSpec` test suite, where every test in `region-tests/default.nix` has been ported into the Haskell test suite.
 
-* Any Ormolu additions to `CHANGELOG.md` should NOT be kept, but instead be added to a new file in `changelog.d/` (e.g. named `ormolu-X.Y.Z`). See `changelog.d/README.md` for more details.
+2. Anything marked "deleted by us" should be deleted.
 
-* Be careful when editing `fourmolu.cabal` to only change shared things (e.g. `tested-with`) and not Fourmolu things (e.g. `name` or `version`).
+    ```shell
+    git status --porcelain | awk '/^DU/ { print $2 }' | xargs git rm
+    ```
+
+3. Conflicts at the following paths should be resolved with `git checkout --ours`:
+    * `.github/workflows/ci.yml`
+
+4. Conflicts at the following paths should be resolve with `git checkout --theirs`:
+    * `expected-failures/`
+
+5. Any Ormolu additions to `CHANGELOG.md` should NOT be kept, but instead be added to a new file `changelog.d/ormolu-X.Y.Z.md`.
+    * See `changelog.d/README.md` for more details.
+
+6. Any changes to `fourmolu.cabal` should only be kept if it's for shared config (e.g. `tested-with`), but not Fourmolu-specific config (e.g. `name` or `version`).
+
+7. Resolve easy conflicts as normal.
+
+8. (Optional) Commit the merge, leaving merge conflict markers for difficult conflicts. Then resolve the conflicts in separate commits.
+    * When you resolve a merge conflict, the old state is completely removed from the git history, which can make it difficult to search the git history. Doing the change in a separate commit explicitly puts non-trivial changes to resolving conflicts into the git history.
 
 ### Update tests
 
-* Regenerate test files (see the "Running tests" section above)
-* Remove any redundant Fourmolu output files
+1. Regenerate test files (see the "Running tests" section above)
+    * Ensure no `*-out.hs` files change.
+    * Ensure that `*-four-out.hs` files mostly match `*-out.hs`, aside from Fourmolu-specific defaults (e.g. 4 space indentation).
+
+2. Remove any redundant Fourmolu output files
     ```bash
     ./scripts/clean_redundant_examples.py
     ```

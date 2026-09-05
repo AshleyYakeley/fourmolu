@@ -29,11 +29,11 @@ jobs:
     steps:
       -
         name: Check out Fourmolu
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: fourmolu
       -
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.stack
           key: ${{ runner.os }}-format_compat-${{ hashFiles('fourmolu/stack.yaml', 'fourmolu/fourmolu.cabal') }}
@@ -45,7 +45,7 @@ jobs:
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
       -
         name: Check out ${{ matrix.repo }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ matrix.repo }}
           ref: ${{ matrix.ref }}
@@ -62,7 +62,7 @@ jobs:
         run: diff -u fourmolu/compat-tests/${{ matrix.name }}.diff target/${{ matrix.name }}.diff
       -
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}-compat-diff
           path: target/${{ matrix.name }}.diff

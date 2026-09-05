@@ -1,6 +1,9 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeepSubsumption #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedLabels #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ViewPatterns #-}
 
@@ -13,11 +16,13 @@ where
 
 import Data.ByteString (ByteString)
 import Data.Char (isSpace)
+import Data.Choice (pattern Without)
 import Data.Foldable
 import Data.Function
 import Data.Generics
 import Data.List (sortOn)
 import Data.Text qualified as T
+import GHC.Data.FastString (FastString)
 import GHC.Hs
 import GHC.Types.SourceText
 import GHC.Types.SrcLoc
@@ -26,6 +31,7 @@ import Ormolu.Imports (normalizeImports)
 import Ormolu.Parser.CommentStream
 import Ormolu.Parser.Result
 import Ormolu.Utils
+import Type.Reflection qualified as TR
 
 -- | Result of comparing two 'ParseResult's.
 data ParseResultDiff
@@ -59,8 +65,16 @@ diffParseResult
     } =
     diffCommentStream cstream0 cstream1
       <> diffHsModule
-        hs0 {hsmodImports = concat . normalizeImports False mempty ImportGroupSingle $ hsmodImports hs0}
-        hs1 {hsmodImports = concat . normalizeImports False mempty ImportGroupSingle $ hsmodImports hs1}
+        hs0 {hsmodImports = concat . normalizeImports' $ hsmodImports hs0}
+        hs1 {hsmodImports = concat . normalizeImports' $ hsmodImports hs1}
+    where
+      -- The exact parameters here don't matter, it just needs to be consistent
+      normalizeImports' =
+        normalizeImports
+          (Without #implicitPrelude)
+          False
+          mempty
+          ImportGroupSingle
 
 diffCommentStream :: CommentStream -> CommentStream -> ParseResultDiff
 diffCommentStream (CommentStream cs) (CommentStream cs')
@@ -69,16 +83,8 @@ diffCommentStream (CommentStream cs) (CommentStream cs')
   where
     commentLines = concatMap (toList . unComment . unLoc)
 
--- | Compare two modules for equality disregarding the following aspects:
---
---     * 'SrcSpan's
---     * ordering of import lists
---     * style (ASCII vs Unicode) of arrows, colons
---     * LayoutInfo (brace style) in extension fields
---     * Empty contexts in type classes
---     * Parens around derived type classes
---     * 'TokenLocation' (in 'LHsToken'/'LHsUniToken')
---     * 'EpaLocation'
+-- | Compare two modules for equality disregarding certain semantically
+-- irrelevant features like exact print annotations.
 diffHsModule :: HsModule GhcPs -> HsModule GhcPs -> ParseResultDiff
 diffHsModule = genericQuery
   where
@@ -91,37 +97,66 @@ diffHsModule = genericQuery
           if x' == (y' :: ByteString)
             then Same
             else Different []
+      | Just rep <- isEpTokenish x,
+        Just rep' <- isEpTokenish y =
+          -- Only check whether the Ep(Uni)Tokens are of the same type; don't
+          -- look at the actual payload (e.g. the location).
+          if rep == rep' then Same else Different []
       | typeOf x == typeOf y,
         toConstr x == toConstr y =
           mconcat $
             gzipWithQ
               ( genericQuery
+                  -- EPA-related
                   `extQ` considerEqual @SrcSpan
                   `ext1Q` epAnnEq
                   `extQ` considerEqual @SourceText
-                  `extQ` hsDocStringEq
-                  `extQ` importDeclQualifiedStyleEq
-                  `extQ` classDeclCtxEq
-                  `extQ` derivedTyClsEq
-                  `extQ` qualTyCtxEq
-                  `extQ` dataDeclEq
                   `extQ` considerEqual @EpAnnComments -- ~ XCGRHSs GhcPs
-                  `extQ` considerEqual @TokenLocation -- in LHs(Uni)Token
                   `extQ` considerEqual @EpaLocation
+                  `extQ` considerEqual @(Maybe EpaLocation)
                   `extQ` considerEqual @EpLayout
-                  `extQ` considerEqual @[AddEpAnn]
                   `extQ` considerEqual @AnnSig
                   `extQ` considerEqual @HsRuleAnn
+                  `extQ` considerEqual @EpLinear
+                  `extQ` considerEqual @AnnSynDecl
+                  `extQ` considerEqual @IsUnicodeSyntax
+                  -- FastString (for example for string literals)
+                  `extQ` considerEqualVia' ((==) @FastString)
+                  -- ModuleName is a newtype of FastString
+                  `extQ` considerEqualVia' ((==) @ModuleName)
+                  -- Haddock strings
+                  `extQ` hsDocStringEq
+                  -- Whether imports are pre- or post-qualified
+                  `extQ` importDeclQualifiedStyleEq
+                  -- Whether a class has an empty context
+                  `extQ` classDeclCtxEq
+                  -- Whether there are parens around a derived type class
+                  `extQ` derivedTyClsEq
+                  `extQ` typeEq
+                  `extQ` dataDeclEq
+                  `extQ` conDeclEq
+                  -- For better error messages
                   `ext2Q` forLocated
-                  -- unicode-related
-                  `extQ` considerEqual @(EpUniToken "->" "→")
-                  `extQ` considerEqual @(EpUniToken "::" "∷")
-                  `extQ` considerEqual @EpLinearArrow
-                  `extQ` considerEqualVia' compareAnnKeywordId
               )
               x
               y
       | otherwise = Different []
+
+    -- Return the 'TR.SomeTypeRep' of the type of the given value if it is an
+    -- 'EpToken', an 'EpUniToken', or a list of these.
+    isEpTokenish :: (Typeable a) => a -> Maybe TR.SomeTypeRep
+    isEpTokenish = fmap TR.SomeTypeRep . go . TR.typeOf
+      where
+        go :: TR.TypeRep a -> Maybe (TR.TypeRep a)
+        go rep = case rep of
+          TR.App t t'
+            | Just HRefl <- TR.eqTypeRep t (TR.typeRep @[]) ->
+                TR.App t <$> go t'
+          TR.App (TR.App t _) _ ->
+            rep <$ TR.eqTypeRep t (TR.typeRep @EpUniToken)
+          TR.App t _ ->
+            rep <$ TR.eqTypeRep t (TR.typeRep @EpToken)
+          _ -> Nothing
 
     considerEqualVia ::
       forall a.
@@ -135,12 +170,20 @@ diffHsModule = genericQuery
     considerEqualVia' f =
       considerEqualVia $ \x x' -> if f x x' then Same else Different []
 
+    considerEqualOn ::
+      (Typeable a, Data b) =>
+      (a -> b) ->
+      a ->
+      GenericQ ParseResultDiff
+    considerEqualOn f = considerEqualVia (genericQuery `on` f)
+
     considerEqual :: forall a. (Typeable a) => a -> GenericQ ParseResultDiff
     considerEqual = considerEqualVia $ \_ _ -> Same
 
     epAnnEq :: EpAnn a -> b -> ParseResultDiff
     epAnnEq _ _ = Same
 
+    importDeclQualifiedStyleEq :: forall a. (Data a) => ImportDeclQualifiedStyle -> a -> ParseResultDiff
     importDeclQualifiedStyleEq = considerEqualVia' f
       where
         f QualifiedPre QualifiedPost = True
@@ -148,7 +191,7 @@ diffHsModule = genericQuery
         f x x' = x == x'
 
     hsDocStringEq :: HsDocString -> GenericQ ParseResultDiff
-    hsDocStringEq = considerEqualVia' ((==) `on` (map (T.dropWhile isSpace) . splitDocString True))
+    hsDocStringEq = considerEqualVia' ((==) `on` (map (T.dropWhile isSpace) . splitDocString))
 
     forLocated ::
       (Data e0, Data e1) =>
@@ -178,32 +221,32 @@ diffHsModule = genericQuery
     normalizeMContext (Just (L _ [])) = Nothing
     normalizeMContext (Just (L ann ctx)) = Just (L ann $ normalizeContext ctx)
 
-    qualTyCtxEq :: HsType GhcPs -> GenericQ ParseResultDiff
-    qualTyCtxEq = considerEqualVia $ \lt rt -> genericQuery (normalizeQualTy lt) (normalizeQualTy rt)
-      where
-        normalizeQualTy :: HsType GhcPs -> HsType GhcPs
-        normalizeQualTy (HsQualTy ann ctx body) = HsQualTy ann (fmap normalizeContext ctx) body
-        normalizeQualTy ty = ty
+    typeEq :: HsType GhcPs -> GenericQ ParseResultDiff
+    typeEq = considerEqualOn $ \case
+      HsQualTy ann ctx body -> HsQualTy ann (fmap normalizeContext ctx) body
+      ty -> ty
 
     classDeclCtxEq :: TyClDecl GhcPs -> GenericQ ParseResultDiff
-    classDeclCtxEq = considerEqualVia $ \lc rc -> genericQuery (normalizeClassDecl lc) (normalizeClassDecl rc)
-      where
-        normalizeClassDecl ClassDecl {tcdCtxt, ..} = ClassDecl {tcdCtxt = normalizeMContext tcdCtxt, ..}
-        normalizeClassDecl d = d
+    classDeclCtxEq = considerEqualOn $ \case
+      ClassDecl {..} -> ClassDecl {tcdCtxt = normalizeMContext tcdCtxt, ..}
+      d -> d
 
     dataDeclEq :: HsDataDefn GhcPs -> GenericQ ParseResultDiff
-    dataDeclEq = considerEqualVia $ \dd dd' -> genericQuery (normalizeDataDecl dd) (normalizeDataDecl dd')
+    dataDeclEq = considerEqualOn $ \case
+      HsDataDefn {..} ->
+        HsDataDefn
+          { -- The order of classes in the context doesn't matter
+            dd_ctxt = normalizeMContext dd_ctxt,
+            -- The order of deriving clauses doesn't matter. Note: need to normalize before sorting, otherwise
+            -- we'll get a different sort order!
+            dd_derivs = sortOn showOutputable ((fmap . fmap) normalizeDerivingClause dd_derivs),
+            ..
+          }
 
-    normalizeDataDecl :: HsDataDefn GhcPs -> HsDataDefn GhcPs
-    normalizeDataDecl HsDataDefn {dd_ctxt, dd_derivs, ..} =
-      HsDataDefn
-        { -- The order of classes in the context doesn't matter
-          dd_ctxt = normalizeMContext dd_ctxt,
-          -- The order of deriving clauses doesn't matter. Note: need to normalize before sorting, otherwise
-          -- we'll get a different sort order!
-          dd_derivs = sortOn showOutputable ((fmap . fmap) normalizeDerivingClause dd_derivs),
-          ..
-        }
+    conDeclEq :: ConDecl GhcPs -> GenericQ ParseResultDiff
+    conDeclEq = considerEqualOn $ \case
+      ConDeclGADT {..} -> ConDeclGADT {con_mb_cxt = normalizeMContext con_mb_cxt, ..}
+      ConDeclH98 {..} -> ConDeclH98 {con_mb_cxt = normalizeMContext con_mb_cxt, ..}
 
     normalizeDerivingClause :: HsDerivingClause GhcPs -> HsDerivingClause GhcPs
     normalizeDerivingClause HsDerivingClause {deriv_clause_tys, ..} =
@@ -216,21 +259,3 @@ diffHsModule = genericQuery
 
     derivedTyClsEq :: DerivClauseTys GhcPs -> GenericQ ParseResultDiff
     derivedTyClsEq = considerEqualVia $ \lc rc -> genericQuery (normalizeDerivClauseTys lc) (normalizeDerivClauseTys rc)
-
-    compareAnnKeywordId x y =
-      let go = curry $ \case
-            (AnnCloseB, AnnCloseBU) -> True
-            (AnnCloseQ, AnnCloseQU) -> True
-            (AnnDarrow, AnnDarrowU) -> True
-            (AnnDcolon, AnnDcolonU) -> True
-            (AnnForall, AnnForallU) -> True
-            (AnnLarrow, AnnLarrowU) -> True
-            (AnnOpenB, AnnOpenBU) -> True
-            (AnnOpenEQ, AnnOpenEQU) -> True
-            (AnnRarrow, AnnRarrowU) -> True
-            (Annlarrowtail, AnnlarrowtailU) -> True
-            (Annrarrowtail, AnnrarrowtailU) -> True
-            (AnnLarrowtail, AnnLarrowtailU) -> True
-            (AnnRarrowtail, AnnRarrowtailU) -> True
-            (_, _) -> False
-       in go x y || go y x || x == y

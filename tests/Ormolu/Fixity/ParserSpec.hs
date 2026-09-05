@@ -35,6 +35,18 @@ spec = do
         `shouldParse` ( exampleFixityOverrides,
                         ModuleReexports Map.empty
                       )
+    it "accepts fractional operator precedences" $
+      parseDotOrmolu
+        ""
+        ( T.unlines
+            [ "infixr 3 >~<",
+              "infixr 3.3 |~|",
+              "infixr 3.7 <~>"
+            ]
+        )
+        `shouldParse` ( fractionalFixityOverrides,
+                        ModuleReexports Map.empty
+                      )
     it "combines conflicting fixity declarations correctly" $
       parseDotOrmolu
         ""
@@ -202,7 +214,7 @@ spec = do
                 elabel "module name"
               ]
           )
-    it "fails with correct parse error (typo: export intead exports)" $
+    it "fails with correct parse error (typo: export instead exports)" $
       parseModuleReexportDeclaration "module Control.Lens export Control.Lens.Lens"
         `shouldFailWith` err
           20
@@ -228,6 +240,16 @@ exampleFixityOverrides =
           ("=<<", FixityInfo InfixR 1),
           (">>", FixityInfo InfixL 1),
           (">>=", FixityInfo InfixL 1)
+        ]
+    )
+
+fractionalFixityOverrides :: FixityOverrides
+fractionalFixityOverrides =
+  FixityOverrides
+    ( Map.fromList
+        [ (">~<", FixityInfo InfixR 3),
+          ("|~|", FixityInfo InfixR 3.3),
+          ("<~>", FixityInfo InfixR 3.7)
         ]
     )
 

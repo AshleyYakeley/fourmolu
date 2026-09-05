@@ -20,6 +20,7 @@ module Ormolu.Printer.Internal
     newline,
     declNewline,
     multilineCommentNewline,
+    newlineLiteral,
     askSourceType,
     askModuleFixityMap,
     askDebug,
@@ -70,7 +71,6 @@ import Control.Monad.State.Strict
 import Data.Bool (bool)
 import Data.Char (isSpace)
 import Data.Choice (Choice)
-import Data.Choice qualified as Choice
 import Data.Coerce
 import Data.Functor ((<&>))
 import Data.Functor.Identity (runIdentity)
@@ -122,7 +122,7 @@ data RC = RC
     -- | Module fixity map
     rcModuleFixityMap :: ModuleFixityMap,
     -- | Whether to print out debug information during printing
-    rcDebug :: !Bool
+    rcDebug :: !(Choice "debug")
   }
 
 -- | State context of 'R'.
@@ -194,8 +194,9 @@ runR ::
   EnumSet Extension ->
   -- | Module fixity map
   ModuleFixityMap ->
+  -- | Whether to print out debug information during printing
+  Choice "debug" ->
   -- | Resulting rendition
-  Bool ->
   Text
 runR (R m) sstream cstream printerOpts localModules sourceType extensions moduleFixityMap debug =
   TL.toStrict . toLazyText . scBuilder $ execState (runReaderT m rc) sc
@@ -438,6 +439,19 @@ newlineRawN n = R . modify $ \sc ->
             _ -> AfterNewline
         }
 
+-- | Insert a newline literal without modifying the internal state of the
+-- parser. This is to be used exceptionally, e.g. for printing multiline
+-- string literals.
+newlineLiteral :: R ()
+newlineLiteral = R . modify $ \sc ->
+  sc
+    { scBuilder = scBuilder sc <> "\n",
+      scColumn = 0,
+      scIndent = 0,
+      scThisLineSpans = [],
+      scRequestedDelimiter = AfterNewline
+    }
+
 -- | Return the source type.
 askSourceType :: R SourceType
 askSourceType = R (asks rcSourceType)
@@ -449,7 +463,7 @@ askModuleFixityMap = R (asks rcModuleFixityMap)
 -- | Retrieve whether we should print out certain debug information while
 -- printing.
 askDebug :: R (Choice "debug")
-askDebug = R (asks (Choice.fromBool . rcDebug))
+askDebug = R (asks rcDebug)
 
 -- | Like 'inci', but indents by exactly the given number of steps.
 inciBy :: Int -> R () -> R ()

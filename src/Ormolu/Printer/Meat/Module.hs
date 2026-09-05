@@ -12,9 +12,10 @@ where
 
 import Control.Monad
 import Data.Choice (pattern With)
+import Data.Choice qualified as Choice
 import GHC.Hs hiding (comment)
+import GHC.LanguageExtensions (Extension (ImplicitPrelude))
 import GHC.Types.SrcLoc
-import GHC.Utils.Outputable (ppr, showSDocUnsafe)
 import Ormolu.Config
 import Ormolu.Imports (normalizeImports)
 import Ormolu.Parser.CommentStream
@@ -41,27 +42,39 @@ p_hsModule mstackHeader pragmas hsmod@HsModule {..} = do
   let XModulePs {..} = hsmodExt
       deprecSpan = maybe [] (pure . getLocA) hsmodDeprecMessage
       exportSpans = maybe [] (pure . getLocA) hsmodExports
-  switchLayout (deprecSpan <> exportSpans) $ do
-    forM_ mstackHeader $ \(L spn comment) -> do
-      spitCommentNow spn comment
+  switchLayout (deprecSpan <> exportSpans) $
+    enterMultilineLayoutIfContainsDocEntries (maybe [] unLoc hsmodExports) $ do
+      forM_ mstackHeader $ \(L spn comment) -> do
+        spitCommentNow spn comment
+        newline
       newline
-    newline
-    p_pragmas pragmas
-    newline
-    mapM_ (p_hsModuleHeader hsmod) hsmodName
-    newline
-    respectful <- getPrinterOpt poRespectful
-    localModules <- getLocalModules
-    importGrouping <- getPrinterOpt poImportGrouping
-    forM_ (normalizeImports respectful localModules importGrouping hsmodImports) $ \importGroup -> do
-      forM_ importGroup (located' p_hsmodImport)
+      p_pragmas pragmas
       newline
-    declNewline
-    switchLayout (getLocA <$> hsmodDecls) $ do
-      preserveSpacing <- getPrinterOpt poRespectful
-      (if preserveSpacing then p_hsDeclsRespectGrouping else p_hsDecls) Free hsmodDecls
+      mapM_ (p_hsModuleHeader hsmod) hsmodName
       newline
-      spitRemainingComments
+      importGroups <- normalizeImportsR hsmodImports
+      forM_ importGroups $ \importGroup -> do
+        forM_ importGroup (located' p_hsmodImport)
+        newline
+      declNewline
+      switchLayout (getLocA <$> hsmodDecls) $ do
+        preserveSpacing <- getPrinterOpt poRespectful
+        (if preserveSpacing then p_hsDeclsRespectGrouping else p_hsDecls) Free hsmodDecls
+        newline
+        spitRemainingComments
+  where
+    normalizeImportsR imports = do
+      implicitPrelude <- Choice.fromBool <$> isExtensionEnabled ImplicitPrelude
+      respectful <- getPrinterOpt poRespectful
+      localModules <- getLocalModules
+      importGrouping <- getPrinterOpt poImportGrouping
+      pure $
+        normalizeImports
+          implicitPrelude
+          respectful
+          localModules
+          importGrouping
+          imports
 
 p_hsModuleHeader :: HsModule GhcPs -> LocatedA ModuleName -> R ()
 p_hsModuleHeader HsModule {hsmodExt = XModulePs {..}, ..} moduleName = do
@@ -87,8 +100,8 @@ p_hsModuleHeader HsModule {hsmodExt = XModulePs {..}, ..} moduleName = do
           _ -> breakpoint
       breakpointBeforeWhere
         | not isRespectful = breakpointBeforeExportList
-        | isOnSameLine moduleKeyword whereKeyword = space
-        | Just closeParen <- exportClosePSpan, isOnSameLine closeParen whereKeyword = space
+        | isOnSameLine am_mod am_where || isOnSameLine am_sig am_where = space
+        | Just closeParen <- mCloseParen, isOnSameLine closeParen am_where = space
         | otherwise = newline
 
   case hsmodExports of
@@ -102,13 +115,15 @@ p_hsModuleHeader HsModule {hsmodExt = XModulePs {..}, ..} moduleName = do
   txt "where"
   newline
   where
-    (moduleKeyword, whereKeyword) =
-      case am_main (anns hsmodAnn) of
-        -- [AnnModule, AnnWhere] or [AnnSignature, AnnWhere]
-        [AddEpAnn _ moduleLoc, AddEpAnn AnnWhere whereLoc] ->
-          (epaLocationRealSrcSpan moduleLoc, epaLocationRealSrcSpan whereLoc)
-        anns -> error $ "Module had unexpected annotations: " ++ showSDocUnsafe (ppr anns)
-    exportClosePSpan = do
-      AddEpAnn AnnCloseP loc <- al_close . anns . getLoc =<< hsmodExports
-      Just $ epaLocationRealSrcSpan loc
-    isOnSameLine token1 token2 = srcSpanEndLine token1 == srcSpanStartLine token2
+    AnnsModule {am_sig, am_mod, am_where} = anns hsmodAnn
+    mCloseParen = do
+      AnnList {al_brackets} <- anns . getLoc <$> hsmodExports
+      case al_brackets of
+        ListParens _ closeParen -> pure closeParen
+        _ -> error "Unexpectedly got a different kind of bracket in module export list"
+    isOnSameLine = curry $ \case
+      (EpTok token1, EpTok token2) ->
+        let loc1 = epaLocationRealSrcSpan token1
+            loc2 = epaLocationRealSrcSpan token2
+         in srcSpanEndLine loc1 == srcSpanStartLine loc2
+      _ -> False

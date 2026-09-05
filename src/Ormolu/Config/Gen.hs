@@ -9,12 +9,15 @@
 module Ormolu.Config.Gen
   ( PrinterOpts (..)
   , CommaStyle (..)
+  , RecordStyle (..)
   , FunctionArrowsStyle (..)
   , HaddockPrintStyle (..)
   , HaddockPrintStyleModule (..)
+  , HaddockLocSignature (..)
   , ImportExportStyle (..)
   , LetStyle (..)
   , InStyle (..)
+  , IfStyle (..)
   , Unicode (..)
   , SingleConstraintParens (..)
   , ColumnLimit (..)
@@ -27,6 +30,7 @@ module Ormolu.Config.Gen
   , parsePrinterOptsCLI
   , parsePrinterOptsJSON
   , parsePrinterOptType
+  , renderPrinterOpt
   )
 where
 
@@ -51,6 +55,8 @@ data PrinterOpts f =
       poFunctionArrows :: f FunctionArrowsStyle
     , -- | How to place commas in multi-line lists, records, etc.
       poCommaStyle :: f CommaStyle
+    , -- | How to place braces in records
+      poRecordStyle :: f RecordStyle
     , -- | Styling of import/export lists
       poImportExportStyle :: f ImportExportStyle
     , -- | Rules for grouping import declarations
@@ -65,10 +71,14 @@ data PrinterOpts f =
       poHaddockStyle :: f HaddockPrintStyle
     , -- | How to print module docstring
       poHaddockStyleModule :: f HaddockPrintStyleModule
+    , -- | Where to put docstring comments in function signatures
+      poHaddockLocSignature :: f HaddockLocSignature
     , -- | Styling of let blocks
       poLetStyle :: f LetStyle
     , -- | How to align the 'in' keyword with respect to the 'let' keyword
       poInStyle :: f InStyle
+    , -- | Styling of if-statements
+      poIfStyle :: f IfStyle
     , -- | Whether to put parentheses around a single constraint
       poSingleConstraintParens :: f SingleConstraintParens
     , -- | Whether to put parentheses around a single deriving class
@@ -95,6 +105,7 @@ emptyPrinterOpts =
     , poColumnLimit = Nothing
     , poFunctionArrows = Nothing
     , poCommaStyle = Nothing
+    , poRecordStyle = Nothing
     , poImportExportStyle = Nothing
     , poImportGrouping = Nothing
     , poIndentWheres = Nothing
@@ -102,8 +113,10 @@ emptyPrinterOpts =
     , poNewlinesBetweenDecls = Nothing
     , poHaddockStyle = Nothing
     , poHaddockStyleModule = Nothing
+    , poHaddockLocSignature = Nothing
     , poLetStyle = Nothing
     , poInStyle = Nothing
+    , poIfStyle = Nothing
     , poSingleConstraintParens = Nothing
     , poSingleDerivingParens = Nothing
     , poSortConstraints = Nothing
@@ -121,6 +134,7 @@ defaultPrinterOpts =
     , poColumnLimit = pure NoLimit
     , poFunctionArrows = pure TrailingArrows
     , poCommaStyle = pure Leading
+    , poRecordStyle = pure RecordStyleAligned
     , poImportExportStyle = pure ImportExportDiffFriendly
     , poImportGrouping = pure ImportGroupLegacy
     , poIndentWheres = pure False
@@ -128,8 +142,10 @@ defaultPrinterOpts =
     , poNewlinesBetweenDecls = pure 1
     , poHaddockStyle = pure HaddockMultiLine
     , poHaddockStyleModule = pure PrintStyleInherit
+    , poHaddockLocSignature = pure HaddockLocSigAuto
     , poLetStyle = pure LetAuto
     , poInStyle = pure InRightAlign
+    , poIfStyle = pure IfIndented
     , poSingleConstraintParens = pure ConstraintAlways
     , poSingleDerivingParens = pure DerivingAlways
     , poSortConstraints = pure False
@@ -154,6 +170,7 @@ fillMissingPrinterOpts p1 p2 =
     , poColumnLimit = maybe (poColumnLimit p2) pure (poColumnLimit p1)
     , poFunctionArrows = maybe (poFunctionArrows p2) pure (poFunctionArrows p1)
     , poCommaStyle = maybe (poCommaStyle p2) pure (poCommaStyle p1)
+    , poRecordStyle = maybe (poRecordStyle p2) pure (poRecordStyle p1)
     , poImportExportStyle = maybe (poImportExportStyle p2) pure (poImportExportStyle p1)
     , poImportGrouping = maybe (poImportGrouping p2) pure (poImportGrouping p1)
     , poIndentWheres = maybe (poIndentWheres p2) pure (poIndentWheres p1)
@@ -161,8 +178,10 @@ fillMissingPrinterOpts p1 p2 =
     , poNewlinesBetweenDecls = maybe (poNewlinesBetweenDecls p2) pure (poNewlinesBetweenDecls p1)
     , poHaddockStyle = maybe (poHaddockStyle p2) pure (poHaddockStyle p1)
     , poHaddockStyleModule = maybe (poHaddockStyleModule p2) pure (poHaddockStyleModule p1)
+    , poHaddockLocSignature = maybe (poHaddockLocSignature p2) pure (poHaddockLocSignature p1)
     , poLetStyle = maybe (poLetStyle p2) pure (poLetStyle p1)
     , poInStyle = maybe (poInStyle p2) pure (poInStyle p1)
+    , poIfStyle = maybe (poIfStyle p2) pure (poIfStyle p1)
     , poSingleConstraintParens = maybe (poSingleConstraintParens p2) pure (poSingleConstraintParens p1)
     , poSingleDerivingParens = maybe (poSingleDerivingParens p2) pure (poSingleDerivingParens p1)
     , poSortConstraints = maybe (poSortConstraints p2) pure (poSortConstraints p1)
@@ -196,6 +215,10 @@ parsePrinterOptsCLI f =
       "How to place commas in multi-line lists, records, etc. (choices: \"leading\" or \"trailing\") (default: leading)"
       "OPTION"
     <*> f
+      "record-style"
+      "How to place braces in records (choices: \"aligned\" or \"knr\") (default: aligned)"
+      "OPTION"
+    <*> f
       "import-export-style"
       "Styling of import/export lists (choices: \"leading\", \"trailing\", or \"diff-friendly\") (default: diff-friendly)"
       "OPTION"
@@ -224,12 +247,20 @@ parsePrinterOptsCLI f =
       "How to print module docstring (default: same as 'haddock-style')"
       "OPTION"
     <*> f
+      "haddock-location-signature"
+      "Where to put docstring comments in function signatures (choices: \"auto\", \"leading\", or \"trailing\") (default: leading if function-arrows is trailing, or vice-versa)"
+      "OPTION"
+    <*> f
       "let-style"
       "Styling of let blocks (choices: \"auto\", \"inline\", \"newline\", \"mixed\", or \"like-do\") (default: auto)"
       "OPTION"
     <*> f
       "in-style"
       "How to align the 'in' keyword with respect to the 'let' keyword (choices: \"left-align\", \"right-align\", or \"no-space\") (default: right-align)"
+      "OPTION"
+    <*> f
+      "if-style"
+      "Styling of if-statements (choices: \"indented\" or \"hanging\") (default: indented)"
       "OPTION"
     <*> f
       "single-constraint-parens"
@@ -274,6 +305,7 @@ parsePrinterOptsJSON f =
     <*> f "column-limit"
     <*> f "function-arrows"
     <*> f "comma-style"
+    <*> f "record-style"
     <*> f "import-export-style"
     <*> f "import-grouping"
     <*> f "indent-wheres"
@@ -281,8 +313,10 @@ parsePrinterOptsJSON f =
     <*> f "newlines-between-decls"
     <*> f "haddock-style"
     <*> f "haddock-style-module"
+    <*> f "haddock-location-signature"
     <*> f "let-style"
     <*> f "in-style"
+    <*> f "if-style"
     <*> f "single-constraint-parens"
     <*> f "single-deriving-parens"
     <*> f "sort-constraints"
@@ -311,9 +345,23 @@ instance PrinterOptsFieldType Bool where
             "Valid values are: \"false\" or \"true\""
           ]
 
+class RenderPrinterOpt a where
+  renderPrinterOpt :: a -> String
+
+instance RenderPrinterOpt Int where
+  renderPrinterOpt = show
+
+instance RenderPrinterOpt Bool where
+  renderPrinterOpt = show
+
 data CommaStyle
   = Leading
   | Trailing
+  deriving (Eq, Show, Enum, Bounded)
+
+data RecordStyle
+  = RecordStyleAligned
+  | RecordStyleKnr
   deriving (Eq, Show, Enum, Bounded)
 
 data FunctionArrowsStyle
@@ -333,6 +381,12 @@ data HaddockPrintStyleModule
   | PrintStyleOverride HaddockPrintStyle
   deriving (Eq, Show)
 
+data HaddockLocSignature
+  = HaddockLocSigAuto
+  | HaddockLocSigLeading
+  | HaddockLocSigTrailing
+  deriving (Eq, Show, Enum, Bounded)
+
 data ImportExportStyle
   = ImportExportLeading
   | ImportExportTrailing
@@ -351,6 +405,11 @@ data InStyle
   = InLeftAlign
   | InRightAlign
   | InNoSpace
+  deriving (Eq, Show, Enum, Bounded)
+
+data IfStyle
+  = IfIndented
+  | IfHanging
   deriving (Eq, Show, Enum, Bounded)
 
 data Unicode
@@ -403,6 +462,33 @@ instance PrinterOptsFieldType CommaStyle where
           , "Valid values are: \"leading\" or \"trailing\""
           ]
 
+instance RenderPrinterOpt CommaStyle where
+  renderPrinterOpt = \case
+    Leading -> "leading"
+    Trailing -> "trailing"
+
+instance Aeson.FromJSON RecordStyle where
+  parseJSON =
+    Aeson.withText "RecordStyle" $ \s ->
+      either Aeson.parseFail pure $
+        parsePrinterOptType (Text.unpack s)
+
+instance PrinterOptsFieldType RecordStyle where
+  parsePrinterOptType s =
+    case s of
+      "aligned" -> Right RecordStyleAligned
+      "knr" -> Right RecordStyleKnr
+      _ ->
+        Left . unlines $
+          [ "unknown value: " <> show s
+          , "Valid values are: \"aligned\" or \"knr\""
+          ]
+
+instance RenderPrinterOpt RecordStyle where
+  renderPrinterOpt = \case
+    RecordStyleAligned -> "aligned"
+    RecordStyleKnr -> "knr"
+
 instance Aeson.FromJSON FunctionArrowsStyle where
   parseJSON =
     Aeson.withText "FunctionArrowsStyle" $ \s ->
@@ -420,6 +506,12 @@ instance PrinterOptsFieldType FunctionArrowsStyle where
           [ "unknown value: " <> show s
           , "Valid values are: \"trailing\", \"leading\", or \"leading-args\""
           ]
+
+instance RenderPrinterOpt FunctionArrowsStyle where
+  renderPrinterOpt = \case
+    TrailingArrows -> "trailing"
+    LeadingArrows -> "leading"
+    LeadingArgsArrows -> "leading-args"
 
 instance Aeson.FromJSON HaddockPrintStyle where
   parseJSON =
@@ -439,6 +531,12 @@ instance PrinterOptsFieldType HaddockPrintStyle where
           , "Valid values are: \"single-line\", \"multi-line\", or \"multi-line-compact\""
           ]
 
+instance RenderPrinterOpt HaddockPrintStyle where
+  renderPrinterOpt = \case
+    HaddockSingleLine -> "single-line"
+    HaddockMultiLine -> "multi-line"
+    HaddockMultiLineCompact -> "multi-line-compact"
+
 instance Aeson.FromJSON HaddockPrintStyleModule where
   parseJSON =
     \v -> case v of
@@ -451,6 +549,30 @@ instance PrinterOptsFieldType HaddockPrintStyleModule where
     \s -> case s of
       "" -> pure PrintStyleInherit
       _ -> PrintStyleOverride <$> parsePrinterOptType s
+
+instance Aeson.FromJSON HaddockLocSignature where
+  parseJSON =
+    Aeson.withText "HaddockLocSignature" $ \s ->
+      either Aeson.parseFail pure $
+        parsePrinterOptType (Text.unpack s)
+
+instance PrinterOptsFieldType HaddockLocSignature where
+  parsePrinterOptType s =
+    case s of
+      "auto" -> Right HaddockLocSigAuto
+      "leading" -> Right HaddockLocSigLeading
+      "trailing" -> Right HaddockLocSigTrailing
+      _ ->
+        Left . unlines $
+          [ "unknown value: " <> show s
+          , "Valid values are: \"auto\", \"leading\", or \"trailing\""
+          ]
+
+instance RenderPrinterOpt HaddockLocSignature where
+  renderPrinterOpt = \case
+    HaddockLocSigAuto -> "auto"
+    HaddockLocSigLeading -> "leading"
+    HaddockLocSigTrailing -> "trailing"
 
 instance Aeson.FromJSON ImportExportStyle where
   parseJSON =
@@ -469,6 +591,12 @@ instance PrinterOptsFieldType ImportExportStyle where
           [ "unknown value: " <> show s
           , "Valid values are: \"leading\", \"trailing\", or \"diff-friendly\""
           ]
+
+instance RenderPrinterOpt ImportExportStyle where
+  renderPrinterOpt = \case
+    ImportExportLeading -> "leading"
+    ImportExportTrailing -> "trailing"
+    ImportExportDiffFriendly -> "diff-friendly"
 
 instance Aeson.FromJSON LetStyle where
   parseJSON =
@@ -490,6 +618,14 @@ instance PrinterOptsFieldType LetStyle where
           , "Valid values are: \"auto\", \"inline\", \"newline\", \"mixed\", or \"like-do\""
           ]
 
+instance RenderPrinterOpt LetStyle where
+  renderPrinterOpt = \case
+    LetAuto -> "auto"
+    LetInline -> "inline"
+    LetNewline -> "newline"
+    LetMixed -> "mixed"
+    LetLikeDo -> "like-do"
+
 instance Aeson.FromJSON InStyle where
   parseJSON =
     Aeson.withText "InStyle" $ \s ->
@@ -507,6 +643,34 @@ instance PrinterOptsFieldType InStyle where
           [ "unknown value: " <> show s
           , "Valid values are: \"left-align\", \"right-align\", or \"no-space\""
           ]
+
+instance RenderPrinterOpt InStyle where
+  renderPrinterOpt = \case
+    InLeftAlign -> "left-align"
+    InRightAlign -> "right-align"
+    InNoSpace -> "no-space"
+
+instance Aeson.FromJSON IfStyle where
+  parseJSON =
+    Aeson.withText "IfStyle" $ \s ->
+      either Aeson.parseFail pure $
+        parsePrinterOptType (Text.unpack s)
+
+instance PrinterOptsFieldType IfStyle where
+  parsePrinterOptType s =
+    case s of
+      "indented" -> Right IfIndented
+      "hanging" -> Right IfHanging
+      _ ->
+        Left . unlines $
+          [ "unknown value: " <> show s
+          , "Valid values are: \"indented\" or \"hanging\""
+          ]
+
+instance RenderPrinterOpt IfStyle where
+  renderPrinterOpt = \case
+    IfIndented -> "indented"
+    IfHanging -> "hanging"
 
 instance Aeson.FromJSON Unicode where
   parseJSON =
@@ -526,6 +690,12 @@ instance PrinterOptsFieldType Unicode where
           , "Valid values are: \"detect\", \"always\", or \"never\""
           ]
 
+instance RenderPrinterOpt Unicode where
+  renderPrinterOpt = \case
+    UnicodeDetect -> "detect"
+    UnicodeAlways -> "always"
+    UnicodeNever -> "never"
+
 instance Aeson.FromJSON SingleConstraintParens where
   parseJSON =
     Aeson.withText "SingleConstraintParens" $ \s ->
@@ -543,6 +713,12 @@ instance PrinterOptsFieldType SingleConstraintParens where
           [ "unknown value: " <> show s
           , "Valid values are: \"auto\", \"always\", or \"never\""
           ]
+
+instance RenderPrinterOpt SingleConstraintParens where
+  renderPrinterOpt = \case
+    ConstraintAuto -> "auto"
+    ConstraintAlways -> "always"
+    ConstraintNever -> "never"
 
 instance Aeson.FromJSON ColumnLimit where
   parseJSON =
@@ -590,6 +766,12 @@ instance PrinterOptsFieldType SingleDerivingParens where
           , "Valid values are: \"auto\", \"always\", or \"never\""
           ]
 
+instance RenderPrinterOpt SingleDerivingParens where
+  renderPrinterOpt = \case
+    DerivingAuto -> "auto"
+    DerivingAlways -> "always"
+    DerivingNever -> "never"
+
 instance Aeson.FromJSON ImportGrouping where
   parseJSON =
     \case
@@ -636,6 +818,9 @@ defaultPrinterOptsYaml =
     , "# How to place commas in multi-line lists, records, etc. (choices: leading or trailing)"
     , "comma-style: leading"
     , ""
+    , "# How to place braces in records (choices: aligned or knr)"
+    , "record-style: aligned"
+    , ""
     , "# Styling of import/export lists (choices: leading, trailing, or diff-friendly)"
     , "import-export-style: diff-friendly"
     , ""
@@ -657,11 +842,17 @@ defaultPrinterOptsYaml =
     , "# How to print module docstring"
     , "haddock-style-module: null"
     , ""
+    , "# Where to put docstring comments in function signatures (choices: auto, leading, or trailing)"
+    , "haddock-location-signature: auto"
+    , ""
     , "# Styling of let blocks (choices: auto, inline, newline, mixed, or like-do)"
     , "let-style: auto"
     , ""
     , "# How to align the 'in' keyword with respect to the 'let' keyword (choices: left-align, right-align, or no-space)"
     , "in-style: right-align"
+    , ""
+    , "# Styling of if-statements (choices: indented or hanging)"
+    , "if-style: indented"
     , ""
     , "# Whether to put parentheses around a single constraint (choices: auto, always, or never)"
     , "single-constraint-parens: always"

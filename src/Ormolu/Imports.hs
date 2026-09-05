@@ -1,4 +1,4 @@
-{-# LANGUAGE CPP #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -13,10 +13,13 @@ where
 
 import Data.Bifunctor
 import Data.Char (isAlphaNum)
+import Data.Choice (Choice)
+import Data.Choice qualified as Choice
 import Data.Function (on)
 import Data.List (nubBy, sortBy, sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as M
+import Data.Ord (comparing)
 import Data.Set (Set)
 import Distribution.ModuleName qualified as Cabal
 import GHC.Data.FastString
@@ -27,30 +30,41 @@ import GHC.Types.PkgQual
 import GHC.Types.SourceText
 import GHC.Types.SrcLoc
 import Ormolu.Config (ImportGrouping)
-import Ormolu.Imports.Grouping (Import (..), groupImports, prepareExistingGroups)
+import Ormolu.Imports.Grouping (Import (..), ImportList (..), groupImports, prepareExistingGroups)
 import Ormolu.Utils (notImplemented, showOutputable)
-#if !MIN_VERSION_base(4,20,0)
-import Data.List (foldl')
-#endif
 
 -- | Sort, group and normalize imports.
 --
 -- Assumes input list is sorted by source location. Output list is not necessarily
 -- sorted by source location, so this function should be called at most once on a
 -- given input list.
-normalizeImports :: Bool -> Set Cabal.ModuleName -> ImportGrouping -> [LImportDecl GhcPs] -> [[LImportDecl GhcPs]]
-normalizeImports respectful localModules importGrouping =
+normalizeImports ::
+  Choice "implicitPrelude" ->
+  Bool ->
+  Set Cabal.ModuleName ->
+  ImportGrouping ->
+  [LImportDecl GhcPs] ->
+  [[LImportDecl GhcPs]]
+normalizeImports implicitPrelude respectful localModules importGrouping =
   map (fmap snd)
     . concatMap
       ( groupImports importGrouping localModules toImport
           . M.toAscList
           . M.fromListWith combineImports
-          . fmap (\x -> (importId x, g x))
+          . fmap (\x -> (importId implicitPrelude x, g x))
       )
     . prepareExistingGroups importGrouping respectful
   where
     toImport :: (ImportId, x) -> Import
-    toImport (ImportId {..}, _) = Import {importName = importIdName, importQualified}
+    toImport (ImportId {..}, _) =
+      Import
+        { importName = importIdName,
+          importList = case importHiding of
+            Just (ImportListInterpretationOrd Exactly) -> Just ImportList
+            Just (ImportListInterpretationOrd EverythingBut) -> Just HidingList
+            Nothing -> Nothing,
+          importQualified
+        }
 
     g :: LImportDecl GhcPs -> LImportDecl GhcPs
     g (L l ImportDecl {..}) =
@@ -89,9 +103,22 @@ data ImportId = ImportId
     importSafe :: Bool,
     importQualified :: Bool,
     importAs :: Maybe ModuleName,
-    importHiding :: Maybe ImportListInterpretationOrd
+    importHiding :: Maybe ImportListInterpretationOrd,
+    importLevel :: Maybe ImportDeclLevelOrd
   }
   deriving (Eq, Ord)
+
+-- | A wrapper for 'ImportDeclLevel' that provides an 'Ord' instance.
+newtype ImportDeclLevelOrd = ImportDeclLevelOrd
+  { unImportDeclLevelOrd :: ImportDeclLevel
+  }
+  deriving stock (Eq)
+
+instance Ord ImportDeclLevelOrd where
+  compare = compare `on` toBool . unImportDeclLevelOrd
+    where
+      toBool ImportDeclSplice = False
+      toBool ImportDeclQuote = True
 
 data ImportPkgQual
   = -- | The import is not qualified by a package name.
@@ -123,8 +150,8 @@ instance Ord ImportListInterpretationOrd where
       toBool EverythingBut = True
 
 -- | Obtain an 'ImportId' for a given import.
-importId :: LImportDecl GhcPs -> ImportId
-importId (L _ ImportDecl {..}) =
+importId :: Choice "implicitPrelude" -> LImportDecl GhcPs -> ImportId
+importId implicitPrelude (L _ ImportDecl {..}) =
   ImportId
     { importIsPrelude = isPrelude,
       importIdName = moduleName,
@@ -136,11 +163,17 @@ importId (L _ ImportDecl {..}) =
         QualifiedPost -> True
         NotQualified -> False,
       importAs = unLoc <$> ideclAs,
-      importHiding = ImportListInterpretationOrd . fst <$> ideclImportList
+      importHiding = ImportListInterpretationOrd . fst <$> ideclImportList,
+      importLevel = importLevelOf ideclLevelSpec
     }
   where
-    isPrelude = moduleNameString moduleName == "Prelude"
+    isPrelude =
+      Choice.isTrue implicitPrelude && moduleNameString moduleName == "Prelude"
     moduleName = unLoc ideclName
+    importLevelOf = \case
+      LevelStylePre l -> Just (ImportDeclLevelOrd l)
+      LevelStylePost l -> Just (ImportDeclLevelOrd l)
+      NotLevelled -> Nothing
 
 -- | Normalize a collection of import items.
 normalizeLies :: [LIE GhcPs] -> [LIE GhcPs]
@@ -170,7 +203,7 @@ normalizeLies = sortOn (getIewn . unLoc) . M.elems . foldl' combine M.empty
                         IEVar _ _ _ ->
                           error "Ormolu.Imports broken presupposition"
                         IEThingAbs x _ _ ->
-                          IEThingWith x n wildcard g Nothing
+                          IEThingWith (x, noAnn) n wildcard g Nothing
                         IEThingAll x n' _ ->
                           IEThingAll x n' Nothing
                         IEThingWith x n' wildcard' g' _ ->
@@ -222,15 +255,15 @@ compareLIewn = compareIewn `on` unLoc
 
 -- | Compare two @'IEWrapppedName' 'GhcPs'@ things.
 compareIewn :: IEWrappedName GhcPs -> IEWrappedName GhcPs -> Ordering
-compareIewn (IEName _ x) (IEName _ y) = unLoc x `compareRdrName` unLoc y
-compareIewn (IEName _ _) (IEPattern _ _) = LT
-compareIewn (IEName _ _) (IEType _ _) = LT
-compareIewn (IEPattern _ _) (IEName _ _) = GT
-compareIewn (IEPattern _ x) (IEPattern _ y) = unLoc x `compareRdrName` unLoc y
-compareIewn (IEPattern _ _) (IEType _ _) = LT
-compareIewn (IEType _ _) (IEName _ _) = GT
-compareIewn (IEType _ _) (IEPattern _ _) = GT
-compareIewn (IEType _ x) (IEType _ y) = unLoc x `compareRdrName` unLoc y
+compareIewn = (comparing fst <> (compareRdrName `on` unLoc . snd)) `on` classify
+  where
+    classify :: IEWrappedName GhcPs -> (Int, LocatedN RdrName)
+    classify = \case
+      IEName _ x -> (0, x)
+      IEDefault _ x -> (1, x)
+      IEPattern _ x -> (2, x)
+      IEType _ x -> (3, x)
+      IEData _ x -> (4, x)
 
 compareRdrName :: RdrName -> RdrName -> Ordering
 compareRdrName x y =

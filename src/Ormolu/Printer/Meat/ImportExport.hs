@@ -8,6 +8,7 @@
 module Ormolu.Printer.Meat.ImportExport
   ( p_hsmodExports,
     p_hsmodImport,
+    enterMultilineLayoutIfContainsDocEntries,
   )
 where
 
@@ -28,12 +29,13 @@ import Ormolu.Utils (RelativePos (..), attachRelativePos)
 
 p_hsmodExports :: [LIE GhcPs] -> R ()
 p_hsmodExports xs =
-  parens' False $ do
-    layout <- getLayout
-    sep
-      breakpoint
-      (\(isAllPrevDoc, p, l) -> sitcc (located (addDocSrcSpan l) (p_lie layout isAllPrevDoc p)))
-      (withAllPrevDoc $ attachRelativePos xs)
+  enterMultilineLayoutIfContainsDocEntries xs $
+    parens' False $ do
+      layout <- getLayout
+      sep
+        breakpoint
+        (\(isAllPrevDoc, p, l) -> sitcc (located (addDocSrcSpan l) (p_lie layout isAllPrevDoc p)))
+        (withAllPrevDoc $ attachRelativePos xs)
   where
     -- In order to correctly set the layout when a doc comment is present.
     addDocSrcSpan lie@(L l ie) = case ieExportDoc ie of
@@ -49,6 +51,10 @@ p_hsmodImport ImportDecl {..} = do
   space
   when ideclSafe (txt "safe")
   space
+  case ideclLevelSpec of
+    LevelStylePre l -> p_declLevel l
+    _ -> return ()
+  space
   when
     (isImportDeclQualified ideclQualified && not useQualifiedPost)
     (txt "qualified")
@@ -59,6 +65,10 @@ p_hsmodImport ImportDecl {..} = do
   space
   inci $ do
     located ideclName atom
+    space
+    case ideclLevelSpec of
+      LevelStylePost l -> p_declLevel l
+      _ -> return ()
     when
       (isImportDeclQualified ideclQualified && useQualifiedPost)
       (space >> txt "qualified")
@@ -84,6 +94,11 @@ p_hsmodImport ImportDecl {..} = do
             (\(p, l) -> sitcc (located l (p_lie layout False p)))
             (attachRelativePos xs)
     newline
+
+p_declLevel :: ImportDeclLevel -> R ()
+p_declLevel = \case
+  ImportDeclSplice -> txt "splice"
+  ImportDeclQuote -> txt "quote"
 
 p_lie :: Layout -> Bool -> RelativePos -> IE GhcPs -> R ()
 p_lie encLayout isAllPrevDoc relativePos = \case
@@ -182,6 +197,19 @@ ieExportDoc = \case
   IEGroup {} -> Nothing
   IEDoc {} -> Nothing
   IEDocNamed {} -> Nothing
+
+enterMultilineLayoutIfContainsDocEntries :: [LIE GhcPs] -> R () -> R ()
+enterMultilineLayoutIfContainsDocEntries xs =
+  if any (isDocEntry . unLoc) xs
+    then enterLayout MultiLine
+    else id
+
+isDocEntry :: (IE pass) -> Bool
+isDocEntry = \case
+  IEDoc {} -> True
+  IEGroup {} -> True
+  IEDocNamed {} -> True
+  _ -> False
 
 ----------------------------------------------------------------------------
 

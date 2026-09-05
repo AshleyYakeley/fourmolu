@@ -1,8 +1,12 @@
 {-# LANGUAGE MagicHash #-}
 
 foo = "foobar"
-bar = "foo\&barbaz"
+bar = "foo\&bar\ \baz"
 baz =
     "foo\
     \bar\
     \baz"
+
+weirdGap = "\65\ \0"
+
+weirdEscape = "\^\ "

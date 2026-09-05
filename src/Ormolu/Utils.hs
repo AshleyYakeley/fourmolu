@@ -14,7 +14,6 @@ module Ormolu.Utils
     separatedByBlankNE,
     onTheSameLine,
     groupBy',
-    matchAddEpAnn,
     textToStringBuffer,
     ghcModuleNameToCabal,
   )
@@ -74,14 +73,14 @@ showOutputable = showSDoc baseDynFlags . ppr
 
 -- | Split and normalize a doc string. The result is a list of lines that
 -- make up the comment.
-splitDocString :: Bool -> HsDocString -> [Text]
-splitDocString shouldEscapeCommentBraces docStr =
+splitDocString :: HsDocString -> [Text]
+splitDocString docStr =
   case r of
     [] -> [""]
     _ -> r
   where
     r =
-      fmap (escapeLeadingDollar . escapeCommentBraces)
+      fmap escapeLeadingDollar
         . dropPaddingSpace'
         . dropWhileEnd T.null
         . fmap (T.stripEnd . T.pack)
@@ -118,10 +117,6 @@ splitDocString shouldEscapeCommentBraces docStr =
            in if leadingSpace x
                 then dropSpace <$> xs
                 else xs
-    escapeCommentBraces =
-      if shouldEscapeCommentBraces
-        then T.replace "{-" "{\\-" . T.replace "-}" "-\\}"
-        else id
 
 -- | Increment line number in a 'SrcSpan'.
 incSpanLine :: Int -> SrcSpan -> SrcSpan
@@ -163,13 +158,6 @@ groupBy' eq = flip foldr [] $ \x -> \case
     if x `eq` y
       then (x :| y : ys) : zs
       else pure x : (y :| ys) : zs
-
--- | Check whether the given 'AnnKeywordId' or its Unicode variant is in an
--- 'AddEpAnn', and return the 'EpaLocation' if so.
-matchAddEpAnn :: AnnKeywordId -> AddEpAnn -> Maybe EpaLocation
-matchAddEpAnn annId (AddEpAnn annId' loc)
-  | annId == annId' || unicodeAnn annId == annId' = Just loc
-  | otherwise = Nothing
 
 -- | Convert 'Text' to a 'StringBuffer' by making a copy.
 textToStringBuffer :: Text -> StringBuffer

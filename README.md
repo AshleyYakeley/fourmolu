@@ -22,7 +22,7 @@
 * [Contributing](#contributing)
 * [License](#license)
 
-Fourmolu is a formatter for Haskell source code. It is a fork of [Ormolu](https://github.com/tweag/ormolu), with upstream improvements continually merged.
+Fourmolu is a formatter for Haskell source code. It is a fork of [Ormolu](https://github.com/mrkkrp/ormolu), with upstream improvements continually merged.
 
 We share all bar one of Ormolu's goals:
 
@@ -49,12 +49,23 @@ See https://fourmolu.github.io/config/
 
 ## Installation
 
-To install the latest release from Hackage, simply install with Cabal or Stack:
+### (Recommended) Install with GHCup
 
-```console
-$ cabal install fourmolu
-$ stack install fourmolu
+```bash
+ghcup config add-release-channel 3rdparty
+ghcup install fourmolu latest
 ```
+
+### Install with Cabal/Stack
+
+```bash
+cabal install fourmolu
+stack install fourmolu
+```
+
+### Install with [dotslash](https://dotslash-cli.com/docs/)
+
+Copy the configuration in the GitHub release notes.
 
 ## Building from source
 
@@ -117,7 +128,7 @@ Fourmolu can be integrated with your editor via the [Haskell Language Server](ht
 
 ### GitHub actions
 
-[`run-fourmolu`][https://github.com/haskell-actions/run-fourmolu] is the recommended way to ensure that a project is formatted with Fourmolu.
+[`run-fourmolu`](https://github.com/haskell-actions/run-fourmolu) is the recommended way to ensure that a project is formatted with Fourmolu.
 
 ### Language extensions, dependencies, and fixities
 
@@ -140,10 +151,15 @@ fixities:
   - infixr 1  =<<
   - infixr 0  $, $!
   - infixl 4 <*>, <*, *>, <**>
+  - infixr 3 >~<
+  - infixr 3.3 |~|
+  - infixr 3.7 <~>
 ```
 
 It uses exactly the same syntax as usual Haskell fixity declarations to make
-it easier for Haskellers to edit and maintain.
+it easier for Haskellers to edit and maintain. Since Ormolu 0.7.8.0
+fractional precedences are supported for more precise control over
+formatting of complex operator chains.
 
 `fourmolu.yaml` can also contain instructions about
 module re-exports that Fourmolu should be aware of. This might be desirable
@@ -266,7 +282,7 @@ You can see how Ormolu decides the fixity of operators if you use `--debug`.
 * CPP support is experimental. CPP is virtually impossible to handle
   correctly, so we process them as a sort of unchangeable snippets. This
   works only in simple cases when CPP conditionals surround top-level
-  declarations. See the [CPP](https://github.com/tweag/ormolu/blob/master/DESIGN.md#cpp) section in the design notes for a
+  declarations. See the [CPP](https://github.com/mrkkrp/ormolu/blob/master/DESIGN.md#cpp) section in the design notes for a
   discussion of the dangers.
 * Various minor idempotence issues, most of them are related to comments or column limits.
 

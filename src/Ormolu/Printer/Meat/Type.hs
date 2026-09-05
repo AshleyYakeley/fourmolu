@@ -1,32 +1,42 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedLabels #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 
 -- | Rendering of types.
 module Ormolu.Printer.Meat.Type
   ( p_hsType,
-    startTypeAnnotation,
-    startTypeAnnotationDecl,
+    p_hsTypeAnnotation,
     hasDocStrings,
     p_hsContext,
+    p_hsContext',
     p_hsTyVarBndr,
     ForAllVisibility (..),
     p_forallBndrs,
-    p_conDeclFields,
+    p_hsConDeclRecFields,
+    p_hsConDeclField,
+    p_hsConDeclFieldWithDoc,
     p_lhsTypeArg,
     p_hsSigType,
-    hsOuterTyVarBndrsToHsType,
+    hsSigTypeToType,
     lhsTypeToSigType,
+
+    -- * Re-exports from Ormolu.Printer.Meat.Type.Function
+    FunRepr (..),
+    ParsedFunRepr,
+    ParsedFunRepr' (..),
+    p_hsFun,
   )
 where
 
 import Control.Monad
-import Data.Choice (pattern With, pattern Without)
-import Data.Functor ((<&>))
-import Data.List (sortOn)
+import Data.Choice (pattern Is, pattern With, pattern Without)
+import Data.Maybe (fromMaybe)
 import GHC.Data.Strict qualified as Strict
 import GHC.Hs hiding (isPromoted)
 import GHC.Types.SourceText
@@ -36,36 +46,19 @@ import Ormolu.Config
 import Ormolu.Printer.Combinators
 import Ormolu.Printer.Meat.Common
 import {-# SOURCE #-} Ormolu.Printer.Meat.Declaration.OpTree (p_tyOpTree, tyOpTree)
-import {-# SOURCE #-} Ormolu.Printer.Meat.Declaration.Value (p_hsUntypedSplice, p_stringLit)
+import Ormolu.Printer.Meat.Declaration.StringLiteral
+import {-# SOURCE #-} Ormolu.Printer.Meat.Declaration.Value (p_hsUntypedSplice)
+import Ormolu.Printer.Meat.Type.Function
 import Ormolu.Printer.Operators
 import Ormolu.Utils
+import Prelude hiding (span)
 
 p_hsType :: HsType GhcPs -> R ()
-p_hsType t = do
-  layout <- getLayout
-  p_hsType' (hasDocStrings t || layout == MultiLine) t
-
-p_hsType' :: Bool -> HsType GhcPs -> R ()
-p_hsType' multilineArgs = \case
-  HsForAllTy _ tele t -> do
-    vis <-
-      case tele of
-        HsForAllInvis _ bndrs -> p_forallBndrsStart p_hsTyVarBndr bndrs >> pure ForAllInvis
-        HsForAllVis _ bndrs -> p_forallBndrsStart p_hsTyVarBndr bndrs >> pure ForAllVis
-    getPrinterOpt poFunctionArrows >>= \case
-      LeadingArrows | multilineArgs -> interArgBreak >> txt " " >> p_forallBndrsEnd vis
-      _ -> p_forallBndrsEnd vis >> interArgBreak
-    located t p_hsType
-  HsQualTy _ qs t -> do
-    located qs p_hsContext
-    getPrinterOpt poFunctionArrows >>= \case
-      LeadingArrows -> interArgBreak >> token'darrow >> space
-      TrailingArrows -> space >> token'darrow >> interArgBreak
-      LeadingArgsArrows -> space >> token'darrow >> interArgBreak
-    case unLoc t of
-      HsQualTy {} -> p_hsTypeR (unLoc t)
-      HsFunTy {} -> located t p_hsType
-      _ -> located t p_hsTypeR
+p_hsType = \case
+  ty@HsForAllTy {} ->
+    p_hsFun ty
+  ty@HsQualTy {} ->
+    p_hsFun ty
   HsTyVar _ p n -> do
     case p of
       IsPromoted -> do
@@ -98,21 +91,8 @@ p_hsType' multilineArgs = \case
     inci $ do
       txt "@"
       located kd p_hsType
-  HsFunTy _ arrow x y -> do
-    let p_arrow =
-          case arrow of
-            HsUnrestrictedArrow _ -> token'rarrow
-            HsLinearArrow _ -> token'lolly
-            HsExplicitMult _ mult -> do
-              txt "%"
-              p_hsTypeR (unLoc mult)
-              space
-              token'rarrow
-    located x p_hsType
-    getPrinterOpt poFunctionArrows >>= \case
-      LeadingArrows -> interArgBreak >> located y (\y' -> p_arrow >> space >> p_hsTypeR y')
-      TrailingArrows -> space >> p_arrow >> interArgBreak >> located y p_hsTypeR
-      LeadingArgsArrows -> interArgBreak >> located y (\y' -> p_arrow >> space >> p_hsTypeR y')
+  ty@HsFunTy {} ->
+    p_hsFun ty
   HsListTy _ t ->
     located t (brackets N . p_hsType)
   HsTupleTy _ tsort xs ->
@@ -137,38 +117,28 @@ p_hsType' multilineArgs = \case
       parens N (sitcc $ located t p_hsType)
   HsIParamTy _ n t -> sitcc $ do
     located n atom
-    inci $ startTypeAnnotation t p_hsType
+    inci $ p_hsTypeAnnotation t
   HsStarTy _ _ -> token'star
   HsKindSig _ t k -> sitcc $ do
     located t p_hsType
-    inci $ startTypeAnnotation k p_hsType
+    inci $ p_hsTypeAnnotation k
   HsSpliceTy _ splice -> p_hsUntypedSplice DollarSplice splice
   HsDocTy _ t str -> do
-    usePipe <-
-      getPrinterOpt poFunctionArrows <&> \case
-        TrailingArrows -> True
-        LeadingArrows -> False
-        LeadingArgsArrows -> False
-    if usePipe
-      then do
-        p_hsDoc Pipe (With #endNewline) str
-        located t p_hsType
-      else do
-        located t p_hsType
-        newline
-        p_hsDoc Caret (Without #endNewline) str
-  HsBangTy _ (HsSrcBang _ u s) t -> do
-    case u of
-      SrcUnpack -> txt "{-# UNPACK #-}" >> space
-      SrcNoUnpack -> txt "{-# NOUNPACK #-}" >> space
-      NoSrcUnpack -> return ()
-    case s of
-      SrcLazy -> txt "~"
-      SrcStrict -> txt "!"
-      NoSrcStrict -> return ()
-    located t p_hsType
-  HsRecTy _ fields ->
-    p_conDeclFields fields
+    -- Usually handled by p_hsFun, but it's possible to have a bare type
+    -- with docstrings, e.g.
+    --
+    --   type Name =
+    --     -- | The name of a user as a string
+    --     String
+    --
+    --   data User =
+    --     User
+    --       -- | Name
+    --       String
+    --       -- | Age
+    --       Int
+    withHaddocks (Is #end) (Just str) $ do
+      located t p_hsType
   HsExplicitListTy _ p xs -> do
     case p of
       IsPromoted -> txt "'"
@@ -180,11 +150,15 @@ p_hsType' multilineArgs = \case
         (IsPromoted, L _ t : _) | startsWithSingleQuote t -> space
         _ -> return ()
       sep commaDel (sitcc . located' p_hsType) xs
-  HsExplicitTupleTy _ xs -> do
-    txt "'"
+  HsExplicitTupleTy _ p xs -> do
+    case p of
+      IsPromoted -> txt "'"
+      NotPromoted -> return ()
     parens N $ do
-      case xs of
-        L _ t : _ | startsWithSingleQuote t -> space
+      -- If this tuple is promoted and the first element starts with a single
+      -- quote, we need to put a space in between or it fails to parse.
+      case (p, xs) of
+        (IsPromoted, L _ t : _) | startsWithSingleQuote t -> space
         _ -> return ()
       sep commaDel (located' p_hsType) xs
   HsTyLit _ t ->
@@ -192,7 +166,20 @@ p_hsType' multilineArgs = \case
       HsStrTy (SourceText s) _ -> p_stringLit s
       a -> atom a
   HsWildCardTy _ -> txt "_"
-  XHsType t -> atom t
+  XHsType ext -> case ext of
+    HsCoreTy t -> atom @HsCoreTy t
+    HsBangTy _ (HsSrcBang _ u s) t -> do
+      case u of
+        SrcUnpack -> txt "{-# UNPACK #-}" >> space
+        SrcNoUnpack -> txt "{-# NOUNPACK #-}" >> space
+        NoSrcUnpack -> return ()
+      case s of
+        SrcLazy -> txt "~"
+        SrcStrict -> txt "!"
+        NoSrcStrict -> return ()
+      located t p_hsType
+    HsRecTy _ fields ->
+      p_hsConDeclRecFields fields
   where
     startsWithSingleQuote = \case
       HsAppTy _ (L _ f) _ -> startsWithSingleQuote f
@@ -201,59 +188,14 @@ p_hsType' multilineArgs = \case
       HsExplicitListTy {} -> True
       HsTyLit _ HsCharTy {} -> True
       _ -> False
-    interArgBreak =
-      if multilineArgs
-        then newline
-        else breakpoint
-    p_hsTypeR m = p_hsType' multilineArgs m
 
-startTypeAnnotation ::
-  (HasLoc l) =>
-  GenLocated l a ->
-  (a -> R ()) ->
-  R ()
-startTypeAnnotation = startTypeAnnotation' breakpoint breakpoint
-
-startTypeAnnotationDecl ::
-  (HasLoc l) =>
-  GenLocated l a ->
-  (a -> HsType GhcPs) ->
-  (a -> R ()) ->
-  R ()
-startTypeAnnotationDecl lItem getType =
-  startTypeAnnotation'
-    ( if hasDocStrings $ getType $ unLoc lItem
-        then newline
-        else breakpoint
-    )
-    breakpoint
-    lItem
-
-startTypeAnnotation' ::
-  (HasLoc l) =>
-  R () ->
-  R () ->
-  GenLocated l a ->
-  (a -> R ()) ->
-  R ()
-startTypeAnnotation' breakTrailing breakLeading lItem renderItem =
-  getPrinterOpt poFunctionArrows >>= \case
-    TrailingArrows -> do
-      space
-      token'dcolon
-      breakTrailing
-      located lItem renderItem
-    LeadingArrows -> do
-      breakLeading
-      located lItem $ \item -> do
-        token'dcolon
-        space
-        renderItem item
-    LeadingArgsArrows -> do
-      space
-      token'dcolon
-      breakTrailing
-      located lItem renderItem
+p_hsTypeAnnotation :: LHsType GhcPs -> R ()
+p_hsTypeAnnotation ty =
+  p_hsFunParsed @(HsType GhcPs) $
+    ParsedFunSig
+      { sig = (),
+        next = parseFunRepr ty
+      }
 
 -- | Return 'True' if at least one argument in 'HsType' has a doc string
 -- attached to it.
@@ -266,102 +208,48 @@ hasDocStrings = \case
   _ -> False
 
 p_hsContext :: HsContext GhcPs -> R ()
-p_hsContext = \case
-  [] -> txt "()"
-  [x] -> located x p_hsType
-  xs -> do
-    shouldSort <- getPrinterOpt poSortConstraints
-    let sort = if shouldSort then sortOn showOutputable else id
-    parens N $ sep commaDel (sitcc . located' p_hsType) (sort xs)
+p_hsContext = p_hsContext' p_hsType
 
-class IsTyVarBndrFlag flag where
-  isInferred :: flag -> Bool
-  p_tyVarBndrFlag :: flag -> R ()
-  p_tyVarBndrFlag _ = pure ()
+p_hsConDeclRecFields :: [LHsConDeclRecField GhcPs] -> R ()
+p_hsConDeclRecFields xs =
+  recordBraces $ sep commaDel (sitcc . located' p_hsConDeclRecField) xs
 
-instance IsTyVarBndrFlag () where
-  isInferred () = False
-
-instance IsTyVarBndrFlag Specificity where
-  isInferred = \case
-    InferredSpec -> True
-    SpecifiedSpec -> False
-
-instance IsTyVarBndrFlag (HsBndrVis GhcPs) where
-  isInferred _ = False
-  p_tyVarBndrFlag = \case
-    HsBndrRequired NoExtField -> pure ()
-    HsBndrInvisible _ -> txt "@"
-
-p_hsTyVarBndr :: (IsTyVarBndrFlag flag) => HsTyVarBndr flag GhcPs -> R ()
-p_hsTyVarBndr = \case
-  UserTyVar _ flag x -> do
-    p_tyVarBndrFlag flag
-    (if isInferred flag then braces N else id) $ p_rdrName x
-  KindedTyVar _ flag l k -> do
-    p_tyVarBndrFlag flag
-    (if isInferred flag then braces else parens) N . sitcc $ do
-      located l atom
-      inci $ startTypeAnnotation k p_hsType
-
-data ForAllVisibility = ForAllInvis | ForAllVis
-
--- | Render several @forall@-ed variables.
-p_forallBndrs ::
-  (HasLoc l) =>
-  ForAllVisibility ->
-  (a -> R ()) ->
-  [GenLocated l a] ->
-  R ()
-p_forallBndrs vis p tyvars = do
-  p_forallBndrsStart p tyvars
-  p_forallBndrsEnd vis
-
-p_forallBndrsStart :: (HasLoc l) => (a -> R ()) -> [GenLocated l a] -> R ()
-p_forallBndrsStart _ [] = token'forall
-p_forallBndrsStart p tyvars = do
-  switchLayout (locA <$> tyvars) $ do
-    token'forall
-    breakpoint
-    inci $ do
-      sitcc $ sep breakpoint (sitcc . located' p) tyvars
-
-p_forallBndrsEnd :: ForAllVisibility -> R ()
-p_forallBndrsEnd ForAllInvis = txt "." >> space
-p_forallBndrsEnd ForAllVis = space >> token'rarrow
-
-p_conDeclFields :: [LConDeclField GhcPs] -> R ()
-p_conDeclFields xs =
-  braces N $ sep commaDel (sitcc . located' p_conDeclField) xs
-
-p_conDeclField :: ConDeclField GhcPs -> R ()
-p_conDeclField ConDeclField {..} = do
-  commaStyle <- getPrinterOpt poCommaStyle
-  when (commaStyle == Trailing) $
-    mapM_ (p_hsDoc Pipe (With #endNewline)) cd_fld_doc
+p_hsConDeclRecField :: HsConDeclRecField GhcPs -> R ()
+p_hsConDeclRecField field@HsConDeclRecField {..} = withFieldHaddocks $ do
   sitcc $
     sep
       commaDel
       (located' (p_rdrName . foLabel))
-      cd_fld_names
-  getPrinterOpt poFunctionArrows >>= \case
-    LeadingArrows -> inci $ do
-      breakpoint
-      token'dcolon
-      space
-      p_hsType (unLoc cd_fld_type)
-    TrailingArrows -> do
-      space
-      token'dcolon
-      breakpoint
-      sitcc . inci $ p_hsType (unLoc cd_fld_type)
-    LeadingArgsArrows -> do
-      space
-      token'dcolon
-      breakpoint
-      sitcc . inci $ p_hsType (unLoc cd_fld_type)
-  when (commaStyle == Leading) $
-    mapM_ (inciByFrac (-1) . (newline >>) . p_hsDoc Caret (Without #endNewline)) cd_fld_doc
+      cdrf_names
+  inci $ p_hsFun field
+  where
+    withFieldHaddocks action = do
+      commaStyle <- getPrinterOpt poCommaStyle
+      let doc = cdf_doc cdrf_spec
+      when (commaStyle == Trailing) $
+        mapM_ (p_hsDoc Pipe (With #endNewline)) doc
+      action
+      when (commaStyle == Leading) $
+        mapM_ (inciByFrac (-1) . (newline >>) . p_hsDoc Caret (Without #endNewline)) doc
+
+-- | This does not print 'cdf_doc' and 'cdf_multiplicity' as there is no single
+-- strategy for where to print them (see call sites).
+p_hsConDeclField :: HsConDeclField GhcPs -> R ()
+p_hsConDeclField CDF {..} = do
+  case cdf_unpack of
+    SrcUnpack -> txt "{-# UNPACK #-}" *> space
+    SrcNoUnpack -> txt "{-# NOUNPACK #-}" *> space
+    NoSrcUnpack -> pure ()
+  located cdf_type $ \ty -> do
+    case cdf_bang of
+      SrcLazy -> txt "~"
+      SrcStrict -> txt "!"
+      NoSrcStrict -> pure ()
+    p_hsType ty
+
+p_hsConDeclFieldWithDoc :: HsConDeclField GhcPs -> R ()
+p_hsConDeclFieldWithDoc cdf = withHaddocks (Is #end) cdf.cdf_doc $ do
+  p_hsConDeclField cdf
 
 p_lhsTypeArg :: LHsTypeArg GhcPs -> R ()
 p_lhsTypeArg = \case
@@ -373,11 +261,153 @@ p_lhsTypeArg = \case
   HsArgPar _ -> notImplemented "HsArgPar"
 
 p_hsSigType :: HsSigType GhcPs -> R ()
-p_hsSigType HsSig {..} =
-  p_hsType $ hsOuterTyVarBndrsToHsType sig_bndrs sig_body
+p_hsSigType = p_hsType . hsSigTypeToType
+
+instance FunRepr (HsType GhcPs) where
+  parseFunRepr = \case
+    -- `forall a. _`
+    L ann (HsForAllTy _ tele ty) ->
+      ParsedFunForall
+        { tele = L ann tele,
+          next = parseFunRepr ty
+        }
+    -- `HasCallStack => _`
+    ty@(L _ HsQualTy {}) ->
+      let (ctxs, rest) = getContexts ty
+       in ParsedFunQuals
+            { ctxs,
+              next = parseFunRepr rest
+            }
+    -- `Int -> _`
+    L ann (HsFunTy _ multAnn l r) ->
+      let (arg, doc) =
+            case l of
+              L _ (HsDocTy _ x doc_) -> (x, Just doc_)
+              _ -> (l, Nothing)
+       in ParsedFunArg
+            { span = ann,
+              arg,
+              doc,
+              multAnn,
+              next = parseFunRepr r
+            }
+    -- `_ -> Int`
+    L _ (HsDocTy _ ret doc) -> ParsedFunReturn {ret, doc = Just doc}
+    ret -> ParsedFunReturn {ret, doc = Nothing}
+    where
+      getContexts =
+        let go ctxs = \case
+              L ann (HsQualTy _ ctx ty) ->
+                go (L ann ctx : ctxs) ty
+              ty ->
+                (reverse ctxs, ty)
+         in go []
+
+  renderFunReprCtx = p_hsType
+  renderFunReprArg = p_hsType
+  renderFunReprMult = p_hsType
+  renderFunReprRet = p_hsType
+
+----------------------------------------------------------------------------
+-- FunRepr HsConDeclRecField
+
+-- | FunRepr HsConDeclRecField renders a record field type annotation. If the
+-- record field has a function type, we want to render it as a function
+-- respecting `function-arrows`. For the most part, it behaves like HsTypeSig;
+-- however, record fields can have additional syntax not in normal function
+-- types, like specifying the multiplicity for the `::` or specifying
+-- UNPACK/strictness, so we need to handle this specially.
+instance FunRepr (HsConDeclRecField GhcPs) where
+  parseFunRepr (L _ HsConDeclRecField {..}) =
+    ParsedFunSig
+      { sig = cdrf_spec.cdf_multiplicity,
+        next = toRecFieldRepr False $ parseFunRepr cdrf_spec.cdf_type
+      }
+    where
+      toRecFieldRepr :: Bool -> ParsedFunRepr (HsType GhcPs) -> ParsedFunRepr (HsConDeclRecField GhcPs)
+      toRecFieldRepr seenArg = \case
+        ParsedFunSig {} -> error "parseFunRepr @HsType unexpectedly returned ParsedFunSig"
+        ParsedFunForall {..} ->
+          ParsedFunForall
+            { tele,
+              next = toRecFieldRepr seenArg next
+            }
+        ParsedFunQuals {..} ->
+          ParsedFunQuals
+            { ctxs,
+              next = toRecFieldRepr seenArg next
+            }
+        ParsedFunArg {..} ->
+          ParsedFunArg
+            { span,
+              arg =
+                let mUnpack =
+                      if not seenArg
+                        then Just cdrf_spec.cdf_unpack
+                        else Nothing
+                 in L (getLoc arg) (mUnpack, arg),
+              doc,
+              multAnn,
+              next = toRecFieldRepr True next
+            }
+        ParsedFunReturn {..} ->
+          ParsedFunReturn
+            { ret =
+                let mAnn =
+                      if not seenArg
+                        then Just (cdrf_spec.cdf_unpack, cdrf_spec.cdf_bang)
+                        else Nothing
+                 in L (getLoc ret) (mAnn, ret),
+              doc
+            }
+
+  type FunReprSig (HsConDeclRecField GhcPs) = HsMultAnnOf (LocatedA (HsType GhcPs)) GhcPs
+  renderFunReprSig multAnn = do
+    space
+    p_hsMultAnn (located' p_hsType) multAnn
+    space
+    token'dcolon
+
+  type FunReprCtx (HsConDeclRecField GhcPs) = HsType GhcPs
+  renderFunReprCtx = p_hsType
+
+  -- Invariant: SrcUnpackedness should only be set for the first arg
+  type FunReprArg (HsConDeclRecField GhcPs) = (Maybe SrcUnpackedness, LocatedA (HsType GhcPs))
+  renderFunReprArg (mUnpacked, ty) =
+    p_hsConDeclField
+      CDF
+        { cdf_ext = error "unused",
+          cdf_unpack = fromMaybe NoSrcUnpack mUnpacked,
+          cdf_bang = NoSrcStrict,
+          cdf_multiplicity = error "unused",
+          cdf_type = ty,
+          cdf_doc = error "unused"
+        }
+
+  type FunReprMult (HsConDeclRecField GhcPs) = HsType GhcPs
+  renderFunReprMult = p_hsType
+
+  -- Invariant: SrcUnpackedness/SrcStrictness should only be set if there are
+  -- no args
+  type FunReprRet (HsConDeclRecField GhcPs) = (Maybe (SrcUnpackedness, SrcStrictness), LocatedA (HsType GhcPs))
+  renderFunReprRet (mAnn, ty) =
+    p_hsConDeclField
+      CDF
+        { cdf_ext = error "unused",
+          cdf_unpack = unpack,
+          cdf_bang = strictness,
+          cdf_multiplicity = error "unused",
+          cdf_type = ty,
+          cdf_doc = error "unused"
+        }
+    where
+      (unpack, strictness) = fromMaybe (NoSrcUnpack, NoSrcStrict) mAnn
 
 ----------------------------------------------------------------------------
 -- Conversion functions
+
+hsSigTypeToType :: HsSigType GhcPs -> HsType GhcPs
+hsSigTypeToType HsSig {..} = hsOuterTyVarBndrsToHsType sig_bndrs sig_body
 
 -- could be generalized to also handle () instead of Specificity
 hsOuterTyVarBndrsToHsType ::

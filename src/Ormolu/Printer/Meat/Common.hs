@@ -15,6 +15,8 @@ module Ormolu.Printer.Meat.Common
     p_hsDoc',
     p_sourceText,
     p_namespaceSpec,
+    p_hsMultAnn,
+    p_arrow,
   )
 where
 
@@ -28,6 +30,7 @@ import GHC.Hs.Binds
 import GHC.Hs.Doc
 import GHC.Hs.Extension (GhcPs)
 import GHC.Hs.ImpExp
+import GHC.Hs.Type
 import GHC.LanguageExtensions.Type (Extension (..))
 import GHC.Parser.Annotation
 import GHC.Types.Name.Occurrence (OccName (..), occNameString)
@@ -46,7 +49,7 @@ data FamilyStyle
   | -- | Top-level declarations
     Free
 
--- | Outputs the name of the module-like entity, preceeded by the correct prefix ("module" or "signature").
+-- | Outputs the name of the module-like entity, preceded by the correct prefix ("module" or "signature").
 p_hsmodName :: ModuleName -> R ()
 p_hsmodName mname = do
   sourceType <- askSourceType
@@ -59,12 +62,20 @@ p_hsmodName mname = do
 p_ieWrappedName :: IEWrappedName GhcPs -> R ()
 p_ieWrappedName = \case
   IEName _ x -> p_rdrName x
+  IEDefault _ x -> do
+    txt "default"
+    space
+    p_rdrName x
   IEPattern _ x -> do
     txt "pattern"
     space
     p_rdrName x
   IEType _ x -> do
     txt "type"
+    space
+    p_rdrName x
+  IEData _ x -> do
+    txt "data"
     space
     p_rdrName x
 
@@ -74,20 +85,20 @@ p_rdrName l = located l $ \x -> do
   unboxedSums <- isExtensionEnabled UnboxedSums
   let wrapper EpAnn {anns} = case anns of
         NameAnnQuote {nann_quoted} -> tickPrefix . wrapper nann_quoted
-        NameAnn {nann_adornment = NameParens} ->
+        NameAnn {nann_adornment = NameParens {}} ->
           parens N . handleUnboxedSumsAndHashInteraction
-        NameAnn {nann_adornment = NameBackquotes} -> backticks
+        NameAnn {nann_adornment = NameBackquotes {}} -> backticks
         -- whether the `->` identifier is parenthesized
         NameAnnRArrow {nann_mopen = Just _} -> parens N
         -- special case for unboxed unit tuples
-        NameAnnOnly {nann_adornment = NameParensHash} -> const $ txt "(# #)"
+        NameAnnOnly {nann_adornment = NameParensHash {}} -> const $ txt "(# #)"
         _ -> id
 
       -- When UnboxedSums is enabled, `(#` is a single lexeme, so we have to
       -- insert spaces when we have a parenthesized operator starting with `#`.
       handleUnboxedSumsAndHashInteraction
         | unboxedSums,
-          -- Qualified names do not start wth a `#`.
+          -- Qualified names do not start with a `#`.
           Unqual (occNameString -> '#' : _) <- x =
             \y -> space *> y <* space
         | otherwise = id
@@ -120,16 +131,16 @@ p_qualName mname occName = do
 -- | A helper for formatting infix constructions in lhs of definitions.
 p_infixDefHelper ::
   -- | Whether to format in infix style
-  Bool ->
+  Choice "infixStyle" ->
   -- | Whether to bump indentation for arguments
-  Bool ->
+  Choice "indentArgs" ->
   -- | How to print the operator\/name
   R () ->
   -- | How to print the arguments
   [R ()] ->
   R ()
 p_infixDefHelper isInfix indentArgs name args =
-  case (isInfix, args) of
+  case (Choice.toBool isInfix, args) of
     (True, p0 : p1 : ps) -> do
       let parens' =
             if null ps
@@ -142,14 +153,15 @@ p_infixDefHelper isInfix indentArgs name args =
           name
           space
           p1
-      unless (null ps) . inciIf indentArgs $ do
+      unless (null ps) . inciIf (Choice.toBool indentArgs) $ do
         breakpoint
         sitcc (sep breakpoint sitcc ps)
     (_, ps) -> do
       name
       unless (null ps) $ do
         breakpoint
-        inciIf indentArgs $ sitcc (sep breakpoint sitcc args)
+        inciIf (Choice.toBool indentArgs) $
+          sitcc (sep breakpoint sitcc args)
 
 -- | Print a Haddock.
 p_hsDoc ::
@@ -184,12 +196,7 @@ p_hsDoc' poHStyle hstyle needsNewline (L l str) = do
   -- Make sure the Haddock is separated by a newline from other comments.
   when goesAfterComment newline
 
-  let shouldEscapeCommentBraces =
-        case poHStyle of
-          HaddockSingleLine -> False
-          HaddockMultiLine -> True
-          HaddockMultiLineCompact -> True
-  let docStringLines = splitDocString shouldEscapeCommentBraces $ hsDocString str
+  let docStringLines = splitDocString $ hsDocString str
 
   if poHStyle == HaddockSingleLine || length docStringLines <= 1
     then do
@@ -235,3 +242,21 @@ p_namespaceSpec = \case
   NoNamespaceSpecifier -> pure ()
   TypeNamespaceSpecifier _ -> txt "type" *> space
   DataNamespaceSpecifier _ -> txt "data" *> space
+
+p_hsMultAnn :: (mult -> R ()) -> HsMultAnnOf mult GhcPs -> R ()
+p_hsMultAnn p_mult = \case
+  HsUnannotated _ -> pure ()
+  HsLinearAnn _ -> txt "%1"
+  HsExplicitMult _ mult -> txt "%" *> p_mult mult
+
+-- | Like 'p_hsMultAnn', except specifically for arrows, taking -XUnicodeSyntax
+--   into account.
+p_arrow :: (mult -> R ()) -> HsMultAnnOf mult GhcPs -> R ()
+p_arrow p_mult = \case
+  HsUnannotated _ -> token'rarrow
+  HsLinearAnn _ -> token'lolly
+  HsExplicitMult _ mult -> do
+    txt "%"
+    p_mult mult
+    space
+    token'rarrow

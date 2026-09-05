@@ -5,6 +5,7 @@ indentation: 2
 column-limit: none
 function-arrows: trailing
 comma-style: trailing
+record-style: aligned
 import-export-style: trailing
 import-grouping: legacy
 indent-wheres: true
@@ -12,8 +13,10 @@ record-brace-space: true
 newlines-between-decls: 1
 haddock-style: single-line
 haddock-style-module: null
+haddock-location-signature: auto
 let-style: inline
 in-style: right-align
+if-style: indented
 single-constraint-parens: always
 single-deriving-parens: always
 sort-constraints: false

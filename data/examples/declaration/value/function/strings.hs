@@ -5,3 +5,7 @@ bar = "foo\&bar\   \baz"
 baz = "foo\
       \bar\
     \baz"
+
+weirdGap = "\65\ \0"
+
+weirdEscape = "\^\ "

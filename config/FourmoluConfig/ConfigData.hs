@@ -90,6 +90,16 @@ allOptions =
         cliOverrides = emptyOverrides
       },
     Option
+      { name = "record-style",
+        fieldName = Just "poRecordStyle",
+        description = "How to place braces in records",
+        type_ = "RecordStyle",
+        default_ = HsExpr "RecordStyleAligned",
+        ormolu = HsExpr "RecordStyleAligned",
+        sinceVersion = Just "0.20.0.0",
+        cliOverrides = emptyOverrides
+      },
+    Option
       { name = "import-export-style",
         fieldName = Just "poImportExportStyle",
         description = "Styling of import/export lists",
@@ -160,6 +170,16 @@ allOptions =
         cliOverrides = emptyOverrides {cliDefault = Just "same as 'haddock-style'"}
       },
     Option
+      { name = "haddock-location-signature",
+        fieldName = Just "poHaddockLocSignature",
+        description = "Where to put docstring comments in function signatures",
+        type_ = "HaddockLocSignature",
+        default_ = HsExpr "HaddockLocSigAuto",
+        ormolu = HsExpr "HaddockLocSigAuto",
+        sinceVersion = Just "0.19.0.0",
+        cliOverrides = emptyOverrides {cliDefault = Just "leading if function-arrows is trailing, or vice-versa"}
+      },
+    Option
       { name = "let-style",
         fieldName = Just "poLetStyle",
         description = "Styling of let blocks",
@@ -177,6 +197,16 @@ allOptions =
         default_ = HsExpr "InRightAlign",
         ormolu = HsExpr "InRightAlign",
         sinceVersion = Just "0.9.0.0",
+        cliOverrides = emptyOverrides
+      },
+    Option
+      { name = "if-style",
+        fieldName = Just "poIfStyle",
+        description = "Styling of if-statements",
+        type_ = "IfStyle",
+        default_ = HsExpr "IfIndented",
+        ormolu = HsExpr "IfIndented",
+        sinceVersion = Just "0.19.0.0",
         cliOverrides = emptyOverrides
       },
     Option
@@ -344,6 +374,13 @@ allFieldTypes =
           ]
       },
     FieldTypeEnum
+      { fieldTypeName = "RecordStyle",
+        enumOptions =
+          [ ("RecordStyleAligned", "aligned"),
+            ("RecordStyleKnr", "knr")
+          ]
+      },
+    FieldTypeEnum
       { fieldTypeName = "FunctionArrowsStyle",
         enumOptions =
           [ ("TrailingArrows", "trailing"),
@@ -395,6 +432,14 @@ allFieldTypes =
             ]
       },
     FieldTypeEnum
+      { fieldTypeName = "HaddockLocSignature",
+        enumOptions =
+          [ ("HaddockLocSigAuto", "auto"),
+            ("HaddockLocSigLeading", "leading"),
+            ("HaddockLocSigTrailing", "trailing")
+          ]
+      },
+    FieldTypeEnum
       { fieldTypeName = "ImportExportStyle",
         enumOptions =
           [ ("ImportExportLeading", "leading"),
@@ -418,6 +463,13 @@ allFieldTypes =
           [ ("InLeftAlign", "left-align"),
             ("InRightAlign", "right-align"),
             ("InNoSpace", "no-space")
+          ]
+      },
+    FieldTypeEnum
+      { fieldTypeName = "IfStyle",
+        enumOptions =
+          [ ("IfIndented", "indented"),
+            ("IfHanging", "hanging")
           ]
       },
     FieldTypeEnum
